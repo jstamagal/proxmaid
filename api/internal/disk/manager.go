@@ -45,21 +45,55 @@ func NewManager(mockMode bool) *Manager {
 }
 
 // lsblkDevice matches the JSON output from lsblk.
+// Size and Rota use interface{} because lsblk returns different JSON types
+// depending on version (number, string, bool).
 type lsblkDevice struct {
 	Name       string        `json:"name"`
 	Path       string        `json:"path"`
-	Size       string        `json:"size"`
+	Size       interface{}   `json:"size"`
 	Model      string        `json:"model"`
 	Serial     string        `json:"serial"`
 	Type       string        `json:"type"`
 	Mountpoint string        `json:"mountpoint"`
 	FSType     string        `json:"fstype"`
-	Rota       string        `json:"rota"`
+	Rota       interface{}   `json:"rota"`
 	Children   []lsblkDevice `json:"children"`
 }
 
 type lsblkOutput struct {
 	BlockDevices []lsblkDevice `json:"blockdevices"`
+}
+
+// toInt64 converts an interface{} (string, float64, json.Number) to int64.
+func toInt64(v interface{}) int64 {
+	switch val := v.(type) {
+	case float64:
+		return int64(val)
+	case string:
+		n, _ := strconv.ParseInt(val, 10, 64)
+		return n
+	case json.Number:
+		n, _ := val.Int64()
+		return n
+	default:
+		return 0
+	}
+}
+
+// toBool converts an interface{} (bool, string, float64) to bool.
+func toBool(v interface{}) bool {
+	switch val := v.(type) {
+	case bool:
+		return val
+	case float64:
+		return val == 1
+	case string:
+		return val == "1" || val == "true"
+	case json.Number:
+		return val.String() == "1"
+	default:
+		return false
+	}
 }
 
 // ListDisks discovers all block devices on the system.
@@ -84,7 +118,7 @@ func (m *Manager) ListDisks() ([]Info, error) {
 		if dev.Type != "disk" {
 			continue
 		}
-		size, _ := strconv.ParseInt(dev.Size, 10, 64)
+		size := toInt64(dev.Size)
 		disks = append(disks, Info{
 			Name:       dev.Name,
 			Path:       dev.Path,
@@ -95,7 +129,7 @@ func (m *Manager) ListDisks() ([]Info, error) {
 			Type:       dev.Type,
 			Mountpoint: dev.Mountpoint,
 			FSType:     dev.FSType,
-			Rotational: dev.Rota == "1",
+			Rotational: toBool(dev.Rota),
 		})
 	}
 
