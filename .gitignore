@@ -16,9 +16,6 @@ api/proxmaid
 .DS_Store
 Thumbs.db
 
-# NonRAID driver (separate git repo)
-nonraid/
-
 # Next.js
 ui/.next/
 ui/out/

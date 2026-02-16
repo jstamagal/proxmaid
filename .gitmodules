@@ -1,0 +1,3 @@
+[submodule "nonraid"]
+	path = nonraid
+	url = https://github.com/qvr/nonraid
