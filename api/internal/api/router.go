@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/proxmaid/proxmaid/internal/array"
+	"github.com/proxmaid/proxmaid/internal/disk"
 	"github.com/proxmaid/proxmaid/internal/system"
 )
 
@@ -17,7 +18,7 @@ type response struct {
 }
 
 // NewRouter creates the HTTP router with all API routes.
-func NewRouter(arrayMgr *array.Manager, sysMgr *system.Manager) http.Handler {
+func NewRouter(arrayMgr *array.Manager, sysMgr *system.Manager, diskMgr *disk.Manager) http.Handler {
 	mux := http.NewServeMux()
 
 	// Health check
@@ -70,6 +71,31 @@ func NewRouter(arrayMgr *array.Manager, sysMgr *system.Manager) http.Handler {
 	mux.HandleFunc("GET /api/system/module", func(w http.ResponseWriter, r *http.Request) {
 		loaded := sysMgr.IsModuleLoaded()
 		writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]bool{"loaded": loaded}})
+	})
+
+	// List all disks
+	mux.HandleFunc("GET /api/disks", func(w http.ResponseWriter, r *http.Request) {
+		disks, err := diskMgr.ListDisks()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, response{OK: true, Data: disks})
+	})
+
+	// Get SMART health for a disk
+	mux.HandleFunc("GET /api/disks/smart", func(w http.ResponseWriter, r *http.Request) {
+		device := r.URL.Query().Get("device")
+		if device == "" {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "device parameter required"})
+			return
+		}
+		health, err := diskMgr.GetSmartHealth(device)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, response{OK: true, Data: health})
 	})
 
 	// CORS middleware for development

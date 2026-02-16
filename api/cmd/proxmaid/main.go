@@ -10,6 +10,7 @@ import (
 
 	"github.com/proxmaid/proxmaid/internal/api"
 	"github.com/proxmaid/proxmaid/internal/array"
+	"github.com/proxmaid/proxmaid/internal/disk"
 	"github.com/proxmaid/proxmaid/internal/system"
 )
 
@@ -27,8 +28,11 @@ func main() {
 	// Initialize the array manager (wraps nmdctl / proc interface)
 	arrayMgr := array.NewManager(sysMgr)
 
+	// Initialize the disk manager
+	diskMgr := disk.NewManager(sysMgr.MockMode)
+
 	// Initialize API router
-	router := api.NewRouter(arrayMgr, sysMgr)
+	router := api.NewRouter(arrayMgr, sysMgr, diskMgr)
 
 	port := defaultPort
 	if p := os.Getenv("PROXMAID_PORT"); p != "" {

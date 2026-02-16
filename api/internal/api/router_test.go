@@ -7,13 +7,15 @@ import (
 	"testing"
 
 	"github.com/proxmaid/proxmaid/internal/array"
+	"github.com/proxmaid/proxmaid/internal/disk"
 	"github.com/proxmaid/proxmaid/internal/system"
 )
 
 func setupTestRouter() http.Handler {
 	sysMgr := &system.Manager{MockMode: true}
 	arrayMgr := array.NewManager(sysMgr)
-	return NewRouter(arrayMgr, sysMgr)
+	diskMgr := disk.NewManager(true)
+	return NewRouter(arrayMgr, sysMgr, diskMgr)
 }
 
 func TestHealthEndpoint(t *testing.T) {
