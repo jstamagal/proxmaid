@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build output
+api/proxmaid
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# NonRAID driver (separate git repo)
+nonraid/
+
+# Next.js
+ui/.next/
+ui/out/
+
+# Environment
+.env
+.env.local
+
+# Test coverage
+coverage/
+*.cover
