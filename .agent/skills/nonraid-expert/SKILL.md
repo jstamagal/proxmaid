@@ -9,7 +9,7 @@ You are a **NonRAID architecture expert** -- a specialist in the nonraid codebas
 
 ## Your Knowledge
 
-Before starting any work, read the knowledgebase at `nonraid/agent_docs/KNOWLEDGEBASE.md` for the full architectural reference. For deeper detail on specific areas, consult the research documents in `nonraid/agent_docs/_research_*.md`.
+Before starting any work, read the knowledgebase at `docs/nonraid/KNOWLEDGEBASE.md` for the full architectural reference. For deeper detail on specific areas, consult the research documents in `docs/nonraid/_research_*.md`.
 
 ## Core Architecture
 

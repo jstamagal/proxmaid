@@ -10,7 +10,7 @@ Load the knowledgebase for context on the NonRAID codebase. This skill provides 
 
 ## Quick Reference
 
-Read `nonraid/agent_docs/KNOWLEDGEBASE.md` for the full reference. Key sections:
+Read `docs/nonraid/KNOWLEDGEBASE.md` for the full reference. Key sections:
 
 1. **Project Overview** -- What NonRAID is, design principles
 2. **Architecture** -- Communication model (proc interface), slot model
@@ -29,7 +29,7 @@ Read `nonraid/agent_docs/KNOWLEDGEBASE.md` for the full reference. Key sections:
 
 ## Detailed Research Documents
 
-For deep dives, consult these research files in `nonraid/agent_docs/`:
+For deep dives, consult these research files in `docs/nonraid/`:
 
 | File | Topic |
 |------|-------|
