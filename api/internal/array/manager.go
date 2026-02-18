@@ -5,6 +5,7 @@ package array
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -146,6 +147,12 @@ func (m *Manager) AssignDisk(slot int, devicePath string) error {
 	}
 	if devicePath == "" {
 		return fmt.Errorf("device path is required")
+	}
+	// Validate device path to prevent path traversal attacks
+	// Clean path and ensure it's still under /dev/
+	cleaned := filepath.Clean(devicePath)
+	if !strings.HasPrefix(cleaned, "/dev/") {
+		return fmt.Errorf("invalid device path: %s (must start with /dev/)", devicePath)
 	}
 
 	status, err := m.sysMgr.ReadNmdstat()

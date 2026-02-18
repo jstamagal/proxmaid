@@ -255,3 +255,105 @@ func TestFindColdFiles(t *testing.T) {
 		t.Errorf("expected 1 cold file with 30m threshold, got %d", len(got))
 	}
 }
+
+func TestValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		poolName string
+		valid    bool
+	}{
+		{"valid simple", "pool0", true},
+		{"valid with hyphen", "fast-pool", true},
+		{"valid with underscore", "cache_pool", true},
+		{"valid alphanumeric", "pool123", true},
+		{"invalid empty", "", false},
+		{"invalid with slash", "pool/name", false},
+		{"invalid with dot", "pool.name", false},
+		{"invalid with space", "pool name", false},
+		{"invalid path traversal", "../pool", false},
+		{"invalid special chars", "pool@name", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isValidPoolName(tt.poolName)
+			if result != tt.valid {
+				t.Errorf("isValidPoolName(%q) = %v, want %v", tt.poolName, result, tt.valid)
+			}
+		})
+	}
+}
+
+func TestDevicePathValidation(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		valid bool
+	}{
+		{"valid /dev/sda", "/dev/sda", true},
+		{"valid /dev/nvme0n1", "/dev/nvme0n1", true},
+		{"valid /dev/sda1", "/dev/sda1", true},
+		{"invalid empty", "", false},
+		{"invalid relative", "dev/sda", false},
+		{"invalid absolute non-dev", "/home/user/file", false},
+		{"invalid path traversal", "/dev/../etc/passwd", false},
+		{"invalid path traversal 2", "/dev/sda/../../../etc/passwd", false},
+		{"valid with subdirs", "/dev/disk/by-id/ata-Samsung", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isValidDevicePath(tt.path)
+			if result != tt.valid {
+				t.Errorf("isValidDevicePath(%q) = %v, want %v", tt.path, result, tt.valid)
+			}
+		})
+	}
+}
+
+func TestGetPartitionPath(t *testing.T) {
+	tests := []struct {
+		device   string
+		expected string
+	}{
+		{"/dev/sda", "/dev/sda1"},
+		{"/dev/sdb", "/dev/sdb1"},
+		{"/dev/nvme0n1", "/dev/nvme0n1p1"},
+		{"/dev/nvme1n1", "/dev/nvme1n1p1"},
+		{"/dev/mmcblk0", "/dev/mmcblk0p1"},
+		{"/dev/mmcblk1", "/dev/mmcblk1p1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.device, func(t *testing.T) {
+			result := getPartitionPath(tt.device)
+			if result != tt.expected {
+				t.Errorf("getPartitionPath(%q) = %q, want %q", tt.device, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCreatePoolInvalidName(t *testing.T) {
+	m := NewManager(true, nil)
+	_, err := m.CreatePool(CreatePoolRequest{
+		Name:    "../malicious",
+		Devices: []string{"/dev/sda"},
+		FSType:  "xfs",
+	})
+	if err == nil {
+		t.Error("expected error for invalid pool name with path traversal")
+	}
+}
+
+func TestCreatePoolInvalidDevicePath(t *testing.T) {
+	m := NewManager(true, nil)
+	_, err := m.CreatePool(CreatePoolRequest{
+		Name:    "valid-pool",
+		Devices: []string{"/etc/passwd"},
+		FSType:  "xfs",
+	})
+	if err == nil {
+		t.Error("expected error for invalid device path")
+	}
+}

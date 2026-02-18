@@ -35,6 +35,37 @@ func humanSize(bytes int64) string {
 	}
 }
 
+// poolNameRegex validates pool names to prevent path traversal and injection attacks.
+var poolNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// isValidPoolName validates pool name to prevent path traversal and injection attacks.
+func isValidPoolName(name string) bool {
+	return poolNameRegex.MatchString(name)
+}
+
+// isValidDevicePath validates that a device path starts with /dev/ to prevent path traversal.
+// Uses filepath.Clean to resolve .. components and ensure the cleaned path is still under /dev/.
+func isValidDevicePath(path string) bool {
+	if !strings.HasPrefix(path, "/dev/") {
+		return false
+	}
+	// Clean the path to resolve any .. or . components
+	cleaned := filepath.Clean(path)
+	// Verify the cleaned path still starts with /dev/
+	return strings.HasPrefix(cleaned, "/dev/")
+}
+
+// getPartitionPath returns the correct partition path for different device types.
+// Handles /dev/sda -> /dev/sda1, /dev/nvme0n1 -> /dev/nvme0n1p1, /dev/mmcblk0 -> /dev/mmcblk0p1
+func getPartitionPath(devicePath string) string {
+	// NVMe and MMC devices use 'p' prefix for partitions
+	if strings.Contains(devicePath, "nvme") || strings.Contains(devicePath, "mmcblk") {
+		return devicePath + "p1"
+	}
+	// Standard devices (sda, sdb, etc.) just append the number
+	return devicePath + "1"
+}
+
 // ShareCachePolicy controls how a share uses the cache pool.
 type ShareCachePolicy string
 
@@ -188,11 +219,21 @@ func (m *Manager) CreatePool(req CreatePoolRequest) (*Pool, error) {
 	if req.Name == "" {
 		return nil, fmt.Errorf("pool name is required")
 	}
+	// Validate pool name to prevent path traversal attacks
+	if !isValidPoolName(req.Name) {
+		return nil, fmt.Errorf("pool name must contain only alphanumeric characters, hyphens, and underscores")
+	}
 	if _, exists := m.pools[req.Name]; exists {
 		return nil, fmt.Errorf("pool %q already exists", req.Name)
 	}
 	if len(req.Devices) == 0 {
 		return nil, fmt.Errorf("at least one device is required")
+	}
+	// Validate device paths
+	for _, devicePath := range req.Devices {
+		if !isValidDevicePath(devicePath) {
+			return nil, fmt.Errorf("invalid device path: %s (must start with /dev/)", devicePath)
+		}
 	}
 	if req.FSType == "" {
 		req.FSType = "xfs"
@@ -207,15 +248,39 @@ func (m *Manager) CreatePool(req CreatePoolRequest) (*Pool, error) {
 		// Real implementation: wipe, partition, format each device
 		var partitionPaths []string
 		var branchMounts []string
+		var mountedBranches []string // Track successfully mounted branches for cleanup
+		
+		// Cleanup function to rollback on failure
+		cleanup := func() {
+			// Unmount any mounted branches
+			for _, b := range mountedBranches {
+				if err := exec.Command("umount", b).Run(); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to unmount %s during cleanup: %v\n", b, err)
+				}
+			}
+			// Remove created directories - use os.RemoveAll for safety
+			if len(req.Devices) >= 2 {
+				// Validate baseDir is within expected cache pool directory before removing
+				if strings.HasPrefix(baseDir, "/mnt/cache/") {
+					if err := os.RemoveAll(baseDir); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to remove %s during cleanup: %v\n", baseDir, err)
+					}
+				}
+			}
+		}
+		
 		for i, devicePath := range req.Devices {
 			if err := m.diskMgr.WipeDisk(devicePath); err != nil {
+				cleanup()
 				return nil, fmt.Errorf("wipe %s: %w", devicePath, err)
 			}
 			if err := m.diskMgr.PartitionDisk(devicePath); err != nil {
+				cleanup()
 				return nil, fmt.Errorf("partition %s: %w", devicePath, err)
 			}
-			partPath := devicePath + "1"
+			partPath := getPartitionPath(devicePath)
 			if err := m.diskMgr.FormatPartition(partPath, req.FSType); err != nil {
+				cleanup()
 				return nil, fmt.Errorf("format %s: %w", partPath, err)
 			}
 			partitionPaths = append(partitionPaths, partPath)
@@ -229,31 +294,38 @@ func (m *Manager) CreatePool(req CreatePoolRequest) (*Pool, error) {
 				return nil, fmt.Errorf("mkdir mount point: %w", err)
 			}
 			if err := exec.Command("mount", partitionPaths[0], baseDir).Run(); err != nil {
+				// Use os.RemoveAll for safety, validate path first
+				if strings.HasPrefix(baseDir, "/mnt/cache/") {
+					if err := os.RemoveAll(baseDir); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to remove %s during cleanup: %v\n", baseDir, err)
+					}
+				}
 				return nil, fmt.Errorf("mount %s: %w", partitionPaths[0], err)
 			}
 		} else {
 			// mergerfs: create branch dirs and merged dir
 			for _, b := range branchMounts {
 				if err := exec.Command("mkdir", "-p", b).Run(); err != nil {
+					cleanup()
 					return nil, fmt.Errorf("mkdir branch %s: %w", b, err)
 				}
 			}
 			mergedDir := baseDir + "/merged"
 			if err := exec.Command("mkdir", "-p", mergedDir).Run(); err != nil {
+				cleanup()
 				return nil, fmt.Errorf("mkdir merged: %w", err)
 			}
 			for i, partPath := range partitionPaths {
 				if err := exec.Command("mount", partPath, branchMounts[i]).Run(); err != nil {
+					cleanup()
 					return nil, fmt.Errorf("mount branch %s: %w", partPath, err)
 				}
+				mountedBranches = append(mountedBranches, branchMounts[i])
 			}
 			opts := "defaults,allow_other,use_ino,category.create=mfs,moveonenospc=true"
 			mergerfsArgs := []string{"-o", opts, strings.Join(branchMounts, ":"), mergedDir}
 			if err := exec.Command("mergerfs", mergerfsArgs...).Run(); err != nil {
-				// Unmount branches on failure
-				for _, b := range branchMounts {
-					exec.Command("umount", b).Run()
-				}
+				cleanup()
 				return nil, fmt.Errorf("mergerfs: %w", err)
 			}
 			baseDir = mergedDir
