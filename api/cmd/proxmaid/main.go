@@ -9,9 +9,14 @@ import (
 	"syscall"
 
 	"github.com/proxmaid/proxmaid/internal/api"
+	"github.com/proxmaid/proxmaid/internal/app"
 	"github.com/proxmaid/proxmaid/internal/array"
+	"github.com/proxmaid/proxmaid/internal/auth"
 	"github.com/proxmaid/proxmaid/internal/cache"
 	"github.com/proxmaid/proxmaid/internal/disk"
+	"github.com/proxmaid/proxmaid/internal/notify"
+	"github.com/proxmaid/proxmaid/internal/scheduler"
+	"github.com/proxmaid/proxmaid/internal/share"
 	"github.com/proxmaid/proxmaid/internal/system"
 )
 
@@ -35,8 +40,49 @@ func main() {
 	// Initialize the cache manager (mergerfs + mover)
 	cacheMgr := cache.NewManager(sysMgr.MockMode, diskMgr)
 
+	// Initialize the share manager
+	shareMgr := share.NewManager(sysMgr.MockMode)
+
+	// Initialize the app manager (Docker)
+	appMgr := app.NewManager(sysMgr.MockMode)
+
+	// Initialize the notification manager
+	notifyMgr := notify.NewManager(sysMgr.MockMode)
+
+	// Initialize the auth manager
+	authMgr := auth.NewManager(sysMgr.MockMode)
+
+	// Initialize the scheduler
+	schedMgr := scheduler.NewManager(sysMgr.MockMode)
+
+	// Register built-in scheduled tasks
+	schedMgr.RegisterTask(scheduler.ScheduledTask{
+		Name:     "parity_check",
+		Schedule: "0 0 1 * *", // 1st of each month at midnight
+		Enabled:  true,
+		Action:   func() { arrayMgr.Check("CORRECT") },
+	})
+	schedMgr.RegisterTask(scheduler.ScheduledTask{
+		Name:     "smart_short",
+		Schedule: "0 3 * * 0", // Sundays at 3am
+		Enabled:  true,
+		Action:   func() { fmt.Println("[SCHEDULER] Running short SMART test on all disks") },
+	})
+	schedMgr.RegisterTask(scheduler.ScheduledTask{
+		Name:     "smart_long",
+		Schedule: "0 2 1 * *", // 1st of month at 2am
+		Enabled:  false,
+		Action:   func() { fmt.Println("[SCHEDULER] Running long SMART test on all disks") },
+	})
+	schedMgr.RegisterTask(scheduler.ScheduledTask{
+		Name:     "recycle_purge",
+		Schedule: "0 4 * * *", // Daily at 4am
+		Enabled:  true,
+		Action:   func() { fmt.Println("[SCHEDULER] Purging recycle bin (30+ day old files)") },
+	})
+
 	// Initialize API router
-	router := api.NewRouter(arrayMgr, sysMgr, diskMgr, cacheMgr)
+	router := api.NewRouter(arrayMgr, sysMgr, diskMgr, cacheMgr, shareMgr, appMgr, notifyMgr, authMgr, schedMgr)
 
 	port := defaultPort
 	if p := os.Getenv("PROXMAID_PORT"); p != "" {

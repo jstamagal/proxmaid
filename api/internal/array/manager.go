@@ -205,6 +205,173 @@ func (m *Manager) UnassignDisk(slot int) error {
 	return nil
 }
 
+// Import imports an existing array from a superblock file.
+// Wraps `nmdctl import <path>` — reads superblock, discovers disk assignments.
+func (m *Manager) Import(superblockPath string) (*ArrayStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if superblockPath == "" {
+		return nil, fmt.Errorf("superblock path is required")
+	}
+
+	if m.sysMgr.MockMode {
+		fmt.Printf("[MOCK] nmdctl import %s\n", superblockPath)
+		m.state = StateStopped
+		// Return current mock status after "import"
+		raw, _ := m.sysMgr.ReadNmdstat()
+		status, _ := parseNmdstat(raw)
+		return status, nil
+	}
+
+	out, err := m.sysMgr.RunNmdctl("import", superblockPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to import array: %s: %w", out, err)
+	}
+
+	m.state = StateStopped
+	raw, err := m.sysMgr.ReadNmdstat()
+	if err != nil {
+		return nil, fmt.Errorf("import succeeded but failed to read status: %w", err)
+	}
+	return parseNmdstat(raw)
+}
+
+// CreateArray creates a new array with the given parity device.
+// Wraps `nmdctl new <parity-device>` — writes a fresh superblock.
+func (m *Manager) CreateArray(parityDevice string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if parityDevice == "" {
+		return fmt.Errorf("parity device is required")
+	}
+
+	if m.sysMgr.MockMode {
+		fmt.Printf("[MOCK] nmdctl new %s\n", parityDevice)
+		m.state = StateStopped
+		return nil
+	}
+
+	out, err := m.sysMgr.RunNmdctl("new", parityDevice)
+	if err != nil {
+		return fmt.Errorf("failed to create array: %s: %w", out, err)
+	}
+
+	m.state = StateStopped
+	return nil
+}
+
+// ReplaceDisk replaces a failed disk in a slot and triggers rebuild.
+// Wraps `nmdctl replace <slot> <new-device>`.
+func (m *Manager) ReplaceDisk(slot int, newDevice string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if slot < 0 || slot > 29 {
+		return fmt.Errorf("slot must be 0-29")
+	}
+	if newDevice == "" {
+		return fmt.Errorf("new device path is required")
+	}
+
+	if m.sysMgr.MockMode {
+		fmt.Printf("[MOCK] nmdctl replace %d %s\n", slot, newDevice)
+		return nil
+	}
+
+	out, err := m.sysMgr.RunNmdctl("replace", strconv.Itoa(slot), newDevice)
+	if err != nil {
+		return fmt.Errorf("failed to replace disk: %s: %w", out, err)
+	}
+	return nil
+}
+
+// AddDisk adds a data disk to the next empty slot (1-28).
+// Wraps `nmdctl add <device>`.
+func (m *Manager) AddDisk(devicePath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if devicePath == "" {
+		return fmt.Errorf("device path is required")
+	}
+
+	if m.sysMgr.MockMode {
+		fmt.Printf("[MOCK] nmdctl add %s\n", devicePath)
+		return nil
+	}
+
+	out, err := m.sysMgr.RunNmdctl("add", devicePath)
+	if err != nil {
+		return fmt.Errorf("failed to add disk: %s: %w", out, err)
+	}
+	return nil
+}
+
+// FormatSlot formats the partition on a data disk in the given slot.
+// Uses the device name from the array status to find the right partition.
+func (m *Manager) FormatSlot(slot int, fsType string, diskMgr interface{ FormatPartition(string, string) error }) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if slot < 1 || slot > 28 {
+		return fmt.Errorf("slot must be 1-28 (data disks only)")
+	}
+
+	raw, err := m.sysMgr.ReadNmdstat()
+	if err != nil {
+		return fmt.Errorf("failed to read array status: %w", err)
+	}
+	parsed, err := parseNmdstat(raw)
+	if err != nil {
+		return err
+	}
+
+	// Find the device for this slot
+	for _, d := range parsed.Disks {
+		if d.Slot == slot {
+			if d.VirtName == "" {
+				return fmt.Errorf("slot %d has no virtual device name", slot)
+			}
+			partition := "/dev/" + d.VirtName
+			return diskMgr.FormatPartition(partition, fsType)
+		}
+	}
+	return fmt.Errorf("slot %d not found in array", slot)
+}
+
+// MountSlot mounts a data disk's partition to /mnt/disk<slot>.
+func (m *Manager) MountSlot(slot int, diskMgr interface{ Mount(string, string) error }) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if slot < 1 || slot > 28 {
+		return fmt.Errorf("slot must be 1-28 (data disks only)")
+	}
+
+	raw, err := m.sysMgr.ReadNmdstat()
+	if err != nil {
+		return fmt.Errorf("failed to read array status: %w", err)
+	}
+	parsed, err := parseNmdstat(raw)
+	if err != nil {
+		return err
+	}
+
+	for _, d := range parsed.Disks {
+		if d.Slot == slot {
+			if d.VirtName == "" {
+				return fmt.Errorf("slot %d has no virtual device name", slot)
+			}
+			partition := "/dev/" + d.VirtName
+			mountPoint := fmt.Sprintf("/mnt/disk%d", slot)
+			return diskMgr.Mount(partition, mountPoint)
+		}
+	}
+	return fmt.Errorf("slot %d not found in array", slot)
+}
+
 // humanSizeKB converts sectors (512 bytes) to human-readable.
 func humanSizeKB(sectors int64) string {
 	bytes := sectors * 512

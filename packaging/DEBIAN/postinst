@@ -1,0 +1,13 @@
+#!/bin/bash
+set -e
+
+# Create config directory
+mkdir -p /etc/proxmaid
+
+# Install and enable systemd service
+systemctl daemon-reload
+systemctl enable proxmaid.service
+systemctl start proxmaid.service
+
+echo "Proxmaid installed and started."
+echo "Access the web UI at http://$(hostname -I | awk '{print $1}'):8484"

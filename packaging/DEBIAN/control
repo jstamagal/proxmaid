@@ -1,0 +1,13 @@
+Package: proxmaid
+Version: 0.1.0
+Section: admin
+Priority: optional
+Architecture: amd64
+Maintainer: Proxmaid <support@proxmaid.dev>
+Description: Proxmaid Storage Management for Proxmox
+ Proxmaid is a storage management sidecar for Proxmox VE
+ that wraps the NonRAID kernel driver. It provides a REST
+ API and web UI for managing arrays, disks, shares, Docker
+ apps, and notifications.
+Depends: mergerfs, smartmontools
+Recommends: samba, nfs-kernel-server, docker.io

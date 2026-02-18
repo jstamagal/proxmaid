@@ -1,0 +1,17 @@
+[Unit]
+Description=Proxmaid Storage Management API
+After=network.target nonraid.service
+Wants=nonraid.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/proxmaid
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+Environment=PROXMAID_PORT=8484
+WorkingDirectory=/etc/proxmaid
+
+[Install]
+WantedBy=multi-user.target

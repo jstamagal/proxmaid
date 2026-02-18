@@ -3,16 +3,37 @@
 package system
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 )
+
+// UPSStatus holds UPS state from Network UPS Tools (NUT).
+type UPSStatus struct {
+	Online     bool    `json:"online"`
+	BatteryPct int     `json:"battery_pct"`
+	RuntimeSec int     `json:"runtime_sec"`
+	Load       float64 `json:"load"`
+}
+
+// LogEntry holds a parsed journalctl log entry.
+type LogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Unit      string `json:"unit"`
+	Priority  int    `json:"priority"`
+	Message   string `json:"message"`
+}
 
 // Manager handles host-level system operations.
 type Manager struct {
 	// MockMode disables real system calls for development/testing.
 	MockMode bool
+	// mockTimezone stores the timezone when in mock mode.
+	mockTimezone string
 }
 
 // NewManager creates a new system manager.
@@ -87,6 +108,134 @@ func (m *Manager) RunNmdctl(args ...string) (string, error) {
 	cmd := exec.Command("nmdctl", args...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// GetUPSStatus queries NUT (upsc) for UPS state.
+func (m *Manager) GetUPSStatus() (*UPSStatus, error) {
+	if m.MockMode {
+		return &UPSStatus{
+			Online:     true,
+			BatteryPct: 100,
+			RuntimeSec: 3600,
+			Load:       12.5,
+		}, nil
+	}
+
+	out, err := exec.Command("upsc", "ups@localhost").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("upsc failed: %s: %w", string(out), err)
+	}
+
+	kv := make(map[string]string)
+	for _, line := range strings.Split(string(out), "\n") {
+		parts := strings.SplitN(line, ": ", 2)
+		if len(parts) == 2 {
+			kv[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+
+	status := &UPSStatus{
+		Online: kv["ups.status"] == "OL",
+	}
+	if v, err := strconv.Atoi(kv["battery.charge"]); err == nil {
+		status.BatteryPct = v
+	}
+	if v, err := strconv.Atoi(kv["battery.runtime"]); err == nil {
+		status.RuntimeSec = v
+	}
+	if v, err := strconv.ParseFloat(kv["ups.load"], 64); err == nil {
+		status.Load = v
+	}
+
+	return status, nil
+}
+
+// GetLogs returns recent system log entries from journalctl.
+func (m *Manager) GetLogs(lines int, unit string) ([]LogEntry, error) {
+	if m.MockMode {
+		now := time.Now().UTC().Format(time.RFC3339)
+		return []LogEntry{
+			{Timestamp: now, Unit: "proxmaid.service", Priority: 6, Message: "Proxmaid API started on :8484"},
+			{Timestamp: now, Unit: "proxmaid.service", Priority: 6, Message: "Mock mode enabled"},
+			{Timestamp: now, Unit: "kernel", Priority: 4, Message: "md_nonraid: module loaded"},
+			{Timestamp: now, Unit: "systemd", Priority: 6, Message: "Started Proxmaid Storage Management API"},
+		}, nil
+	}
+
+	args := []string{"--no-pager", "-n", strconv.Itoa(lines), "-o", "json"}
+	if unit != "" {
+		args = append(args, "-u", unit)
+	}
+
+	out, err := exec.Command("journalctl", args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("journalctl failed: %w", err)
+	}
+
+	var entries []LogEntry
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			continue
+		}
+
+		entry := LogEntry{
+			Message: fmt.Sprintf("%v", raw["MESSAGE"]),
+		}
+		if v, ok := raw["__REALTIME_TIMESTAMP"].(string); ok {
+			if usec, err := strconv.ParseInt(v, 10, 64); err == nil {
+				entry.Timestamp = time.UnixMicro(usec).UTC().Format(time.RFC3339)
+			}
+		}
+		if v, ok := raw["_SYSTEMD_UNIT"].(string); ok {
+			entry.Unit = v
+		}
+		if v, ok := raw["PRIORITY"].(string); ok {
+			entry.Priority, _ = strconv.Atoi(v)
+		}
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
+}
+
+// GetTimezone returns the current system timezone.
+func (m *Manager) GetTimezone() (string, error) {
+	if m.MockMode {
+		if m.mockTimezone == "" {
+			return "America/New_York", nil
+		}
+		return m.mockTimezone, nil
+	}
+
+	out, err := exec.Command("timedatectl", "show", "-p", "Timezone", "--value").Output()
+	if err != nil {
+		return "", fmt.Errorf("timedatectl failed: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// SetTimezone sets the system timezone.
+func (m *Manager) SetTimezone(tz string) error {
+	if tz == "" {
+		return fmt.Errorf("timezone is required")
+	}
+
+	if m.MockMode {
+		fmt.Printf("[MOCK] timedatectl set-timezone %s\n", tz)
+		m.mockTimezone = tz
+		return nil
+	}
+
+	out, err := exec.Command("timedatectl", "set-timezone", tz).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("timedatectl failed: %s: %w", string(out), err)
+	}
+	return nil
 }
 
 // mockNmdstat returns simulated nmdstat output for development.

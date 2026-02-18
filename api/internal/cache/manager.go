@@ -119,6 +119,9 @@ func NewManager(mockMode bool, diskMgr *disk.Manager) *Manager {
 
 	if mockMode {
 		m.loadMockPools()
+	} else {
+		go m.startHealthMonitor()
+		go m.startScheduledMover()
 	}
 
 	return m
@@ -456,7 +459,46 @@ func (m *Manager) executeMoverRun() {
 				totalBytes += info.Size()
 			}
 		}
-		// TODO: rsync each file to array share, then remove from cache
+		// rsync each cold file to the array, mirroring directory structure
+		for _, path := range files {
+			info, err := os.Stat(path)
+			if err != nil || info.IsDir() {
+				continue
+			}
+
+			// Mirror path: /mnt/cache/pool/share/dir/file → /mnt/user/share/dir/file
+			relPath, err := filepath.Rel(pool.MountPoint, path)
+			if err != nil {
+				continue
+			}
+			destPath := filepath.Join("/mnt/user", relPath)
+			destDir := filepath.Dir(destPath)
+
+			// Create destination directory
+			if err := exec.Command("mkdir", "-p", destDir).Run(); err != nil {
+				fmt.Printf("[CACHE] Failed to create dest dir %s: %v\n", destDir, err)
+				continue
+			}
+
+			// rsync with checksum verification, then remove source
+			cmd := exec.Command("rsync", "--checksum", "--remove-source-files", path, destPath)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				fmt.Printf("[CACHE] rsync failed for %s: %s: %v\n", path, string(out), err)
+				continue
+			}
+
+			totalFiles++
+			totalBytes += info.Size()
+
+			m.mu.Lock()
+			m.mover.FilesMoved = totalFiles
+			m.mover.BytesMoved = totalBytes
+			if totalFiles > 0 {
+				// Rough progress estimate based on files processed vs found
+				m.mover.Progress = float64(totalFiles) / float64(len(files)) * 100
+			}
+			m.mu.Unlock()
+		}
 	}
 
 	m.mu.Lock()
@@ -516,6 +558,248 @@ func FindColdFiles(poolMount string, threshold time.Duration) ([]string, error) 
 		return nil
 	})
 	return out, err
+}
+
+// AddDevice adds a new device to an existing pool.
+// Formats the device and adds it as a new mergerfs branch.
+func (m *Manager) AddDevice(poolName, devicePath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	pool, ok := m.pools[poolName]
+	if !ok {
+		return fmt.Errorf("pool %q not found", poolName)
+	}
+
+	if m.mockMode {
+		fmt.Printf("[MOCK] Adding device %s to pool %s\n", devicePath, poolName)
+		pool.Devices = append(pool.Devices, PoolDevice{
+			Path:      devicePath,
+			Model:     "mock",
+			Size:      1000204886016,
+			SizeHuman: "931.5 GB",
+		})
+		pool.TotalBytes += 1000204886016
+		pool.FreeBytes += 1000204886016
+		return nil
+	}
+
+	if m.diskMgr == nil {
+		return fmt.Errorf("disk manager not available")
+	}
+
+	// Format the new device
+	if err := m.diskMgr.WipeDisk(devicePath); err != nil {
+		return fmt.Errorf("wipe %s: %w", devicePath, err)
+	}
+	if err := m.diskMgr.PartitionDisk(devicePath); err != nil {
+		return fmt.Errorf("partition %s: %w", devicePath, err)
+	}
+	partPath := devicePath + "1"
+	if err := m.diskMgr.FormatPartition(partPath, pool.FSType); err != nil {
+		return fmt.Errorf("format %s: %w", partPath, err)
+	}
+
+	// Create branch mount point
+	branchIdx := len(pool.Devices)
+	baseDir := fmt.Sprintf("/mnt/cache/%s", poolName)
+	branchDir := fmt.Sprintf("%s/dev%d", baseDir, branchIdx)
+	if err := exec.Command("mkdir", "-p", branchDir).Run(); err != nil {
+		return fmt.Errorf("mkdir branch: %w", err)
+	}
+
+	// Mount the new device
+	if err := exec.Command("mount", partPath, branchDir).Run(); err != nil {
+		return fmt.Errorf("mount branch: %w", err)
+	}
+
+	// Add to mergerfs by remounting with the new branch
+	if out, err := exec.Command("mount", "-o", fmt.Sprintf("remount,add=%s", branchDir), pool.MountPoint).CombinedOutput(); err != nil {
+		return fmt.Errorf("mergerfs remount: %s: %w", string(out), err)
+	}
+
+	// Update pool state
+	pool.Devices = append(pool.Devices, PoolDevice{Path: devicePath})
+	pool.BranchMounts = append(pool.BranchMounts, branchDir)
+
+	return nil
+}
+
+// RemoveDevice removes a device from an existing pool.
+// Data should be moved off first (not enforced here).
+func (m *Manager) RemoveDevice(poolName, devicePath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	pool, ok := m.pools[poolName]
+	if !ok {
+		return fmt.Errorf("pool %q not found", poolName)
+	}
+
+	if len(pool.Devices) <= 1 {
+		return fmt.Errorf("cannot remove the last device from a pool")
+	}
+
+	if m.mockMode {
+		fmt.Printf("[MOCK] Removing device %s from pool %s\n", devicePath, poolName)
+		for i, d := range pool.Devices {
+			if d.Path == devicePath {
+				pool.Devices = append(pool.Devices[:i], pool.Devices[i+1:]...)
+				break
+			}
+		}
+		return nil
+	}
+
+	// Find and unmount the branch
+	found := false
+	for i, d := range pool.Devices {
+		if d.Path == devicePath {
+			if i < len(pool.BranchMounts) {
+				branch := pool.BranchMounts[i]
+				exec.Command("umount", branch).Run()
+				pool.BranchMounts = append(pool.BranchMounts[:i], pool.BranchMounts[i+1:]...)
+			}
+			pool.Devices = append(pool.Devices[:i], pool.Devices[i+1:]...)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("device %s not found in pool %s", devicePath, poolName)
+	}
+
+	return nil
+}
+
+// RefreshPoolUsage reads real disk usage for all pools via df.
+func (m *Manager) RefreshPoolUsage() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, pool := range m.pools {
+		if m.mockMode {
+			continue
+		}
+		out, err := exec.Command("df", "-B1", pool.MountPoint).Output()
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(out), "\n")
+		if len(lines) < 2 {
+			continue
+		}
+		fields := strings.Fields(lines[1])
+		if len(fields) >= 4 {
+			total, _ := strconv.ParseInt(fields[1], 10, 64)
+			used, _ := strconv.ParseInt(fields[2], 10, 64)
+			free, _ := strconv.ParseInt(fields[3], 10, 64)
+			pool.TotalBytes = total
+			pool.UsedBytes = used
+			pool.FreeBytes = free
+			if total > 0 {
+				pool.UsedPct = float64(used) / float64(total) * 100
+			}
+		}
+	}
+}
+
+// startHealthMonitor starts a goroutine that checks pool usage every 5 minutes.
+// Triggers emergency mover if usage > 95%.
+func (m *Manager) startHealthMonitor() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		m.RefreshPoolUsage()
+
+		m.mu.RLock()
+		for _, pool := range m.pools {
+			if pool.UsedPct > 95 {
+				fmt.Printf("[CACHE] CRITICAL: Pool %s at %.0f%% — triggering emergency mover\n", pool.Name, pool.UsedPct)
+				m.mu.RUnlock()
+				m.RunMover()
+				m.mu.RLock()
+			} else if pool.UsedPct > 85 {
+				fmt.Printf("[CACHE] WARNING: Pool %s at %.0f%% usage\n", pool.Name, pool.UsedPct)
+			}
+		}
+		m.mu.RUnlock()
+	}
+}
+
+// startScheduledMover parses the mover cron schedule and runs on schedule.
+// Uses a simple minute-level ticker approach for cron-like scheduling.
+func (m *Manager) startScheduledMover() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for now := range ticker.C {
+		m.mu.RLock()
+		enabled := m.mover.Config.Enabled
+		schedule := m.mover.Config.Schedule
+		running := m.mover.Running
+		m.mu.RUnlock()
+
+		if !enabled || running {
+			continue
+		}
+
+		if matchesCron(schedule, now) {
+			fmt.Println("[CACHE] Scheduled mover trigger")
+			m.RunMover()
+
+			m.mu.Lock()
+			m.mover.NextRun = nextCronMatch(schedule, now).Format(time.RFC3339)
+			m.mu.Unlock()
+		}
+	}
+}
+
+// matchesCron checks if the current time matches a simple cron expression.
+// Supports: "MIN HOUR * * *" format (minute, hour, day-of-month, month, day-of-week).
+func matchesCron(schedule string, t time.Time) bool {
+	fields := strings.Fields(schedule)
+	if len(fields) != 5 {
+		return false
+	}
+
+	minute := t.Minute()
+	hour := t.Hour()
+
+	// Check minute field
+	if fields[0] != "*" {
+		m, err := strconv.Atoi(fields[0])
+		if err != nil || m != minute {
+			return false
+		}
+	}
+	// Check hour field
+	if fields[1] != "*" {
+		h, err := strconv.Atoi(fields[1])
+		if err != nil || h != hour {
+			return false
+		}
+	}
+
+	return true
+}
+
+// nextCronMatch calculates the next time the cron schedule will match.
+func nextCronMatch(schedule string, after time.Time) time.Time {
+	fields := strings.Fields(schedule)
+	if len(fields) < 2 {
+		return after.Add(24 * time.Hour)
+	}
+
+	minute, _ := strconv.Atoi(fields[0])
+	hour, _ := strconv.Atoi(fields[1])
+
+	next := time.Date(after.Year(), after.Month(), after.Day(), hour, minute, 0, 0, after.Location())
+	if !next.After(after) {
+		next = next.Add(24 * time.Hour)
+	}
+	return next
 }
 
 // loadMockPools creates realistic mock cache pools for development.

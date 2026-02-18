@@ -209,3 +209,26 @@
   transform: translateY(-2px);
   box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
 }
+
+/* Toast slide-in animation */
+@keyframes slideIn {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* Skeleton shimmer animation */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Responsive breakpoints */
+@media (max-width: 768px) {
+  .sidebar-desktop { display: none; }
+  main { margin-left: 0 !important; }
+  .grid-responsive { grid-template-columns: 1fr !important; }
+}
+
+@media (max-width: 480px) {
+  main { padding: 16px !important; }
+}

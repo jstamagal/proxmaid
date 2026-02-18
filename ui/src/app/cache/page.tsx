@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
-import { api, type CachePool, type MoverStatus } from '@/lib/api';
+import { api, type CachePool, type MoverStatus, type MoverConfig } from '@/lib/api';
 
 function humanBytes(bytes: number): string {
     if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(1)} TB`;
@@ -37,6 +37,10 @@ export default function CachePage() {
     const [mover, setMover] = useState<MoverStatus | null>(null);
     const [loading, setLoading] = useState(true);
     const [moverRunning, setMoverRunning] = useState(false);
+    const [editSchedule, setEditSchedule] = useState('');
+    const [editThreshold, setEditThreshold] = useState('');
+    const [editEnabled, setEditEnabled] = useState(false);
+    const [configDirty, setConfigDirty] = useState(false);
 
     const fetchData = async () => {
         try {
@@ -48,6 +52,11 @@ export default function CachePage() {
             if (moverRes.ok && moverRes.data) {
                 setMover(moverRes.data);
                 setMoverRunning(moverRes.data.running);
+                if (!configDirty) {
+                    setEditSchedule(moverRes.data.config.schedule);
+                    setEditThreshold(moverRes.data.config.age_threshold);
+                    setEditEnabled(moverRes.data.config.enabled);
+                }
             }
         } catch { }
         setLoading(false);
@@ -63,6 +72,17 @@ export default function CachePage() {
         setMoverRunning(true);
         await api.cache.runMover();
         setTimeout(fetchData, 1000);
+    };
+
+    const handleSaveMoverConfig = async () => {
+        const config: MoverConfig = {
+            schedule: editSchedule,
+            age_threshold: editThreshold,
+            enabled: editEnabled,
+        };
+        await api.cache.updateMoverConfig(config);
+        setConfigDirty(false);
+        fetchData();
     };
 
     const totalCacheSize = pools.reduce((s, p) => s + p.total_bytes, 0);
@@ -380,54 +400,70 @@ export default function CachePage() {
                                     <label style={{ fontSize: '12px', color: 'var(--color-text-muted)', display: 'block', marginBottom: '6px' }}>
                                         Schedule (cron)
                                     </label>
-                                    <div style={{
-                                        padding: '10px 12px',
-                                        background: 'var(--color-bg-secondary)',
-                                        borderRadius: '8px',
-                                        border: '1px solid var(--color-border)',
-                                        fontSize: '13px',
-                                        fontFamily: 'monospace',
-                                        color: 'var(--color-text-primary)',
-                                    }}>
-                                        {mover?.config.schedule || '40 3 * * *'}
-                                    </div>
+                                    <input
+                                        type="text"
+                                        value={editSchedule}
+                                        onChange={(e) => { setEditSchedule(e.target.value); setConfigDirty(true); }}
+                                        style={{
+                                            width: '100%',
+                                            padding: '10px 12px',
+                                            background: 'var(--color-bg-secondary)',
+                                            borderRadius: '8px',
+                                            border: '1px solid var(--color-border)',
+                                            fontSize: '13px',
+                                            fontFamily: 'monospace',
+                                            color: 'var(--color-text-primary)',
+                                            outline: 'none',
+                                            boxSizing: 'border-box',
+                                        }}
+                                    />
                                     <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '4px' }}>
-                                        Daily at 3:40 AM
+                                        min hour dom month dow
                                     </div>
                                 </div>
                                 <div>
                                     <label style={{ fontSize: '12px', color: 'var(--color-text-muted)', display: 'block', marginBottom: '6px' }}>
                                         Age Threshold
                                     </label>
-                                    <div style={{
+                                    <input
+                                        type="text"
+                                        value={editThreshold}
+                                        onChange={(e) => { setEditThreshold(e.target.value); setConfigDirty(true); }}
+                                        style={{
+                                            width: '100%',
+                                            padding: '10px 12px',
+                                            background: 'var(--color-bg-secondary)',
+                                            borderRadius: '8px',
+                                            border: '1px solid var(--color-border)',
+                                            fontSize: '13px',
+                                            fontFamily: 'monospace',
+                                            color: 'var(--color-text-primary)',
+                                            outline: 'none',
+                                            boxSizing: 'border-box',
+                                        }}
+                                    />
+                                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '4px' }}>
+                                        Files older than this are moved (e.g. 1d, 12h, 30m)
+                                    </div>
+                                </div>
+                                <div
+                                    onClick={() => { setEditEnabled(!editEnabled); setConfigDirty(true); }}
+                                    style={{
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
                                         padding: '10px 12px',
                                         background: 'var(--color-bg-secondary)',
                                         borderRadius: '8px',
-                                        border: '1px solid var(--color-border)',
-                                        fontSize: '13px',
-                                        fontFamily: 'monospace',
-                                        color: 'var(--color-text-primary)',
-                                    }}>
-                                        {mover?.config.age_threshold || '1d'}
-                                    </div>
-                                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '4px' }}>
-                                        Files older than this are moved to array
-                                    </div>
-                                </div>
-                                <div style={{
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    padding: '10px 12px',
-                                    background: 'var(--color-bg-secondary)',
-                                    borderRadius: '8px',
-                                }}>
+                                        cursor: 'pointer',
+                                    }}
+                                >
                                     <span style={{ fontSize: '13px' }}>Mover Enabled</span>
                                     <span style={{
                                         width: '36px',
                                         height: '20px',
                                         borderRadius: '10px',
-                                        background: mover?.config.enabled
+                                        background: editEnabled
                                             ? 'var(--color-success)'
                                             : 'var(--color-text-muted)',
                                         display: 'flex',
@@ -441,10 +477,19 @@ export default function CachePage() {
                                             borderRadius: '50%',
                                             background: 'white',
                                             transition: 'transform 0.2s ease',
-                                            transform: mover?.config.enabled ? 'translateX(16px)' : 'translateX(0)',
+                                            transform: editEnabled ? 'translateX(16px)' : 'translateX(0)',
                                         }} />
                                     </span>
                                 </div>
+                                {configDirty && (
+                                    <button
+                                        className="btn btn-success"
+                                        onClick={handleSaveMoverConfig}
+                                        style={{ width: '100%', justifyContent: 'center' }}
+                                    >
+                                        Save Config
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </div>

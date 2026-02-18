@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Info holds discovered information about a block device.
@@ -36,12 +38,23 @@ type SmartHealth struct {
 
 // Manager handles disk discovery and operations.
 type Manager struct {
-	MockMode bool
+	MockMode    bool
+	healthCache map[string]*SmartHealth
+	mu          sync.RWMutex
 }
 
 // NewManager creates a new disk manager.
 func NewManager(mockMode bool) *Manager {
-	return &Manager{MockMode: mockMode}
+	m := &Manager{
+		MockMode:    mockMode,
+		healthCache: make(map[string]*SmartHealth),
+	}
+	if mockMode {
+		m.loadMockHealthCache()
+	} else {
+		go m.healthPollingLoop()
+	}
+	return m
 }
 
 // lsblkDevice matches the JSON output from lsblk.
@@ -250,6 +263,144 @@ func mockDisks() []Info {
 		{Name: "sdd", Path: "/dev/sdd", Size: 4000787030016, SizeHuman: "3.6 TB", Model: "Seagate IronWolf", Serial: "ST-9012", Type: "disk", Rotational: true},
 		{Name: "sde", Path: "/dev/sde", Size: 4000787030016, SizeHuman: "3.6 TB", Model: "Seagate IronWolf", Serial: "ST-3456", Type: "disk", Rotational: true},
 	}
+}
+
+// Mount mounts a formatted partition to the given mount point.
+func (m *Manager) Mount(partitionPath, mountPoint string) error {
+	if m.MockMode {
+		fmt.Printf("[MOCK] mount %s %s\n", partitionPath, mountPoint)
+		return nil
+	}
+	if err := exec.Command("mkdir", "-p", mountPoint).Run(); err != nil {
+		return fmt.Errorf("failed to create mount point %s: %w", mountPoint, err)
+	}
+	if out, err := exec.Command("mount", partitionPath, mountPoint).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to mount %s to %s: %s: %w", partitionPath, mountPoint, string(out), err)
+	}
+	return nil
+}
+
+// GetCachedHealth returns all cached SMART health data.
+func (m *Manager) GetCachedHealth() map[string]*SmartHealth {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]*SmartHealth, len(m.healthCache))
+	for k, v := range m.healthCache {
+		result[k] = v
+	}
+	return result
+}
+
+// healthPollingLoop runs every 30 minutes, refreshing SMART data for all disks.
+func (m *Manager) healthPollingLoop() {
+	m.refreshHealthCache()
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		m.refreshHealthCache()
+	}
+}
+
+// refreshHealthCache polls SMART health for all discovered disks.
+func (m *Manager) refreshHealthCache() {
+	disks, err := m.ListDisks()
+	if err != nil {
+		fmt.Printf("[DISK] Failed to list disks for health poll: %v\n", err)
+		return
+	}
+	for _, d := range disks {
+		health, err := m.GetSmartHealth(d.Path)
+		if err != nil {
+			continue
+		}
+		m.mu.Lock()
+		m.healthCache[d.Path] = health
+		m.mu.Unlock()
+	}
+}
+
+// loadMockHealthCache populates the cache with mock SMART data.
+func (m *Manager) loadMockHealthCache() {
+	for _, d := range mockDisks() {
+		m.healthCache[d.Path] = mockSmartHealth(d.Path)
+	}
+}
+
+// SetStandbyTimeout sets the idle spindown timeout for an HDD.
+// Value is in minutes. Wraps hdparm -S.
+func (m *Manager) SetStandbyTimeout(device string, minutes int) error {
+	if m.MockMode {
+		fmt.Printf("[MOCK] hdparm -S %d %s\n", minutes/5, device)
+		return nil
+	}
+	// hdparm -S value: timeout = value * 5 seconds, max 252 (21 minutes)
+	// For longer timeouts, use values 241-251 (30min to 5.5hrs in 30min steps)
+	val := minutes * 60 / 5 // convert minutes to 5-second units
+	if val > 252 {
+		val = 252
+	}
+	out, err := exec.Command("hdparm", "-S", strconv.Itoa(val), device).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("hdparm -S failed: %s: %w", string(out), err)
+	}
+	return nil
+}
+
+// GetPowerState returns the current power state of a disk ("active/idle" or "standby").
+func (m *Manager) GetPowerState(device string) (string, error) {
+	if m.MockMode {
+		return "active/idle", nil
+	}
+	out, err := exec.Command("hdparm", "-C", device).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("hdparm -C failed: %s: %w", string(out), err)
+	}
+	output := string(out)
+	if strings.Contains(output, "standby") {
+		return "standby", nil
+	}
+	return "active/idle", nil
+}
+
+// Spindown forces a disk into standby (spin down).
+func (m *Manager) Spindown(device string) error {
+	if m.MockMode {
+		fmt.Printf("[MOCK] hdparm -Y %s\n", device)
+		return nil
+	}
+	out, err := exec.Command("hdparm", "-Y", device).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("hdparm -Y failed: %s: %w", string(out), err)
+	}
+	return nil
+}
+
+// IdentifyDisk blinks the LED on a disk enclosure (if supported).
+func (m *Manager) IdentifyDisk(device string) error {
+	if m.MockMode {
+		fmt.Printf("[MOCK] ledctl locate=%s\n", device)
+		return nil
+	}
+	if _, err := exec.LookPath("ledctl"); err != nil {
+		return fmt.Errorf("ledctl not found — disk identification not supported on this system")
+	}
+	out, err := exec.Command("ledctl", "locate="+device).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ledctl failed: %s: %w", string(out), err)
+	}
+	return nil
+}
+
+// Unmount unmounts the given mount point.
+func (m *Manager) Unmount(mountPoint string) error {
+	if m.MockMode {
+		fmt.Printf("[MOCK] umount %s\n", mountPoint)
+		return nil
+	}
+	if out, err := exec.Command("umount", mountPoint).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to unmount %s: %s: %w", mountPoint, string(out), err)
+	}
+	return nil
 }
 
 // mockSmartHealth returns simulated SMART data.

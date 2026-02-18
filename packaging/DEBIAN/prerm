@@ -1,0 +1,8 @@
+#!/bin/bash
+set -e
+
+# Stop and disable the service before removal
+systemctl stop proxmaid.service || true
+systemctl disable proxmaid.service || true
+
+echo "Proxmaid service stopped."

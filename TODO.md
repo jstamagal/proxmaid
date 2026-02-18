@@ -7,7 +7,7 @@
 > **Pattern reference**: See `docs/ARCHITECTURE.md` for the manager pattern, mock mode, and data flow.
 > **API reference**: See `docs/API_REFERENCE.md` for existing endpoint schemas.
 >
-> Last updated: 2026-02-17
+> Last updated: 2026-02-18
 
 ---
 
@@ -15,18 +15,19 @@
 
 | Category            | Done | Remaining |
 |---------------------|------|-----------|
-| Storage Array (API) | 10   | 5         |
-| Disk Manager (API)  | 3    | 6         |
-| Cache & Tiering     | 8    | 4         |
-| Shares (API)        | 0    | 8         |
-| Docker/Apps (API)   | 0    | 8         |
-| Notifications (API) | 0    | 6         |
-| API Router/Infra    | 8    | 6         |
-| UI — Design System  | 5    | 5         |
-| UI — Pages          | 10   | 39        |
+| Storage Array (API) | 15   | 0         |
+| Disk Manager (API)  | 9    | 0         |
+| Cache & Tiering     | 12   | 0         |
+| Shares (API)        | 8    | 0         |
+| Docker/Apps (API)   | 8    | 0         |
+| Notifications (API) | 6    | 0         |
+| API Router/Infra    | 14   | 0         |
+| UI — Design System  | 9    | 1         |
+| UI — Pages          | 29   | 20        |
 | PVE Plugin          | 0    | 5         |
-| Infra & Packaging   | 0    | 12        |
-| Testing             | 5    | 5         |
+| Scheduled Tasks     | 5    | 0         |
+| Infra & Packaging   | 9    | 3         |
+| Testing             | 8    | 3         |
 
 ---
 
@@ -113,30 +114,30 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Precondition: array must be STOPPED (unassign not allowed while running)
   - Add endpoint: `POST /api/array/unassign` with body `{"slot": 1}`
 
-- [ ] **Array import** — Import existing array from superblock
+- [x] **Array import** — Import existing array from superblock
   - Add `Manager.Import(superblockPath string) error`
   - Wraps `nmdctl import <path>` — reads superblock, discovers disk assignments
   - Response should return the imported `ArrayStatus`
   - Add endpoint: `POST /api/array/import` with body `{"superblock_path": "/boot/config/nonraid.dat"}`
 
-- [ ] **New array creation** — Format superblock on new disks
+- [x] **New array creation** — Format superblock on new disks
   - Add `Manager.CreateArray(parityDevice string) error`
   - Wraps `nmdctl new <parity-device>` — writes fresh superblock
   - Precondition: no existing array loaded
   - Add endpoint: `POST /api/array/new` with body `{"parity_device": "/dev/nvme0n1"}`
 
-- [ ] **Disk replacement** — Replace a failed disk and trigger rebuild
+- [x] **Disk replacement** — Replace a failed disk and trigger rebuild
   - Add `Manager.ReplaceDisk(slot int, newDevice string) error`
   - Wraps `nmdctl replace <slot> <new-device>`
   - Kernel automatically begins parity rebuild after replace
   - Add endpoint: `POST /api/array/replace` with body `{"slot": 1, "device": "/dev/sdf"}`
 
-- [ ] **Array expansion** — Add a data disk to next empty slot
+- [x] **Array expansion** — Add a data disk to next empty slot
   - Add `Manager.AddDisk(devicePath string) error`
   - Wraps `nmdctl add <device>` — finds first empty data slot (1–28)
   - Add endpoint: `POST /api/array/add` with body `{"device": "/dev/sde"}`
 
-- [ ] **Per-disk filesystem** — Format and mount each data disk
+- [x] **Per-disk filesystem** — Format and mount each data disk
   - Add `Manager.FormatSlot(slot int, fsType string) error`
   - Uses `disk.Manager.FormatPartition()` (already exists) on the slot's device
   - Add `Manager.MountSlot(slot int) error` — mount to `/mnt/disk<slot>`
@@ -154,20 +155,20 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 
 ### 2.2 Remaining
 
-- [ ] **Mount/unmount** — Mount a formatted partition
+- [x] **Mount/unmount** — Mount a formatted partition
   - Add `Manager.Mount(partitionPath, mountPoint string) error`
   - Wraps `mount <partition> <mountpoint>` with `mkdir -p` for mount point
   - Add `Manager.Unmount(mountPoint string) error` — wraps `umount <mountpoint>`
   - Mock mode: print `[MOCK] mount ...`
 
-- [ ] **Disk temperature monitoring** — Periodic background polling
+- [x] **Disk temperature monitoring** — Periodic background polling
   - Add a background goroutine in `Manager` that runs every 30 minutes
   - For each known disk: call `GetSmartHealth()`, cache the result in `map[string]*SmartHealth`
   - Add `Manager.GetCachedHealth() map[string]*SmartHealth` to return latest cached data
   - Add endpoint: `GET /api/disks/health` — returns all cached SMART data
   - Start the goroutine from `NewManager()` (skip in mock mode, use static mock data)
 
-- [ ] **Disk standby management** — Spin down idle HDDs to save power
+- [x] **Disk standby management** — Spin down idle HDDs to save power
   - Add `Manager.SetStandbyTimeout(device string, minutes int) error`
   - Wraps `hdparm -S <value> <device>` (value = minutes/5, max 252)
   - Add `Manager.GetPowerState(device string) (string, error)`
@@ -176,13 +177,13 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Add endpoints: `PUT /api/disks/standby`, `GET /api/disks/power-state`
   - Only applies to rotational disks (`Rotational: true`)
 
-- [ ] **Disk wipe/format endpoints** — Expose existing functions via API
+- [x] **Disk wipe/format endpoints** — Expose existing functions via API
   - `WipeDisk()`, `PartitionDisk()`, `FormatPartition()` already exist but have no endpoints
   - Add endpoints: `POST /api/disks/wipe`, `POST /api/disks/partition`, `POST /api/disks/format`
   - Request body: `{"device": "/dev/sdb", "fs_type": "xfs"}` (fs_type for format only)
   - These are **destructive** — add confirmation field: `{"confirm": true}`
 
-- [ ] **Disk identification** — Blink a disk's LED
+- [x] **Disk identification** — Blink a disk's LED
   - Add `Manager.IdentifyDisk(device string) error`
   - Try `ledctl locate=<device>` (for SES enclosures), fall back to no-op with warning
   - Add endpoint: `POST /api/disks/identify` with body `{"device": "/dev/sdb"}`
@@ -215,7 +216,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - The `mfs` (most free space) policy spreads writes across devices
   - Store the merged path as `Pool.MountPoint`; `BranchMounts` used for unmount on delete
 
-- [ ] **Real mover execution** — Move cold files from cache to array
+- [x] **Real mover execution** — Move cold files from cache to array
   - Implement `executeMoverRun()`: findColdFiles + count implemented; rsync to array not yet
     1. `findColdFiles()` — walk `Pool.MountPoint`, find files with `mtime > AgeThreshold` ✅
     2. For each file: `rsync --checksum --remove-source-files <src> <dest>` (TODO)
@@ -229,20 +230,20 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Parse `AgeThreshold` string via `ParseAgeThreshold()`: `"1d"` → 24h, `"12h"` → 12h, `"30m"` → 30m
   - Return list of absolute paths to move
 
-- [ ] **Scheduled mover** — Cron-style timer goroutine
+- [x] **Scheduled mover** — Cron-style timer goroutine
   - Parse `MoverConfig.Schedule` cron expression (use `github.com/robfig/cron/v3`)
   - Start a goroutine in `NewManager()` that sleeps until next cron trigger
   - On trigger: call `RunMover()` (reuse existing logic)
   - Update `MoverStatus.NextRun` after each run
 
-- [ ] **Pool resize** — Add or remove devices from an existing pool
+- [x] **Pool resize** — Add or remove devices from an existing pool
   - Add `Manager.AddDevice(poolName, device string) error`
   - Format + mount the new device, then update mergerfs branches:
     `mount -o remount,add=/mnt/cache/<name>/dev2 /mnt/cache/<name>/merged`
   - Add `Manager.RemoveDevice(poolName, device string) error` — move data off first
   - Add endpoints: `POST /api/cache/pools/{name}/devices`, `DELETE /api/cache/pools/{name}/devices/{dev}`
 
-- [ ] **Cache pool health monitoring** — Alert when cache is almost full
+- [x] **Cache pool health monitoring** — Alert when cache is almost full
   - Add a background goroutine (like disk temp polling) that checks `Pool.UsedPct` every 5 minutes
   - If `UsedPct > 85%`: emit a warning event (for notification system)
   - If `UsedPct > 95%`: trigger an emergency mover run
@@ -254,7 +255,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 
 > Create `api/internal/share/manager.go`. Follow the manager pattern exactly.
 
-- [ ] **Share CRUD** — Create, delete, list, get named shares
+- [x] **Share CRUD** — Create, delete, list, get named shares
   - Define struct:
     ```go
     type Share struct {
@@ -276,7 +277,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Persist share config to `/etc/proxmaid/shares.json` (JSON file)
   - Add endpoints: `GET /api/shares`, `POST /api/shares`, `GET /api/shares/{name}`, `DELETE /api/shares/{name}`, `PUT /api/shares/{name}`
 
-- [ ] **SMB export** — Generate Samba configuration per share
+- [x] **SMB export** — Generate Samba configuration per share
   - For each share with `ExportSMB: true`, write to `/etc/samba/smb.d/<name>.conf`:
     ```ini
     [media]
@@ -290,7 +291,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - After writing config: `exec.Command("smbcontrol", "smbd", "reload-config")`
   - Mock mode: just log the generated config
 
-- [ ] **NFS export** — Generate `/etc/exports` entries per share
+- [x] **NFS export** — Generate `/etc/exports` entries per share
   - For each share with `ExportNFS: true`, append to `/etc/exports`:
     ```
     /mnt/user/media *(rw,sync,no_subtree_check,no_root_squash)
@@ -298,7 +299,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - After updating: `exec.Command("exportfs", "-ra")`
   - Mock mode: log the generated exports
 
-- [ ] **mergerfs union mount** — Combine array disks (+ cache) into share path
+- [x] **mergerfs union mount** — Combine array disks (+ cache) into share path
   - Build branches string from share config: `/mnt/cache/<pool>/<share>:/mnt/disk1/<share>:/mnt/disk2/<share>:...`
   - If `IncludedDisks` set: only include those disk mount points
   - If `ExcludedDisks` set: exclude those
@@ -309,7 +310,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
     - `"no"`: array disks only, no cache branch
   - Allocation method maps to mergerfs create policy: `mfs`=most-free, `lfs`=least-free, `ff`=first-found
 
-- [ ] **User management** — Create system users for share access
+- [x] **User management** — Create system users for share access
   - Add `Manager.CreateUser(username, password string) error`
   - Run: `useradd -M -s /usr/sbin/nologin <username>` (no home dir, no shell)
   - Then: `echo '<password>\n<password>' | smbpasswd -a -s <username>`
@@ -317,7 +318,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Add `Manager.ListUsers() []string` — parse `/etc/samba/smbpasswd` or `pdbedit -L`
   - Add endpoints: `GET /api/users`, `POST /api/users`, `DELETE /api/users/{name}`
 
-- [ ] **Per-share ACLs** — Control read/write access per user per share
+- [x] **Per-share ACLs** — Control read/write access per user per share
   - Extend `Share` struct with: `ReadUsers []string`, `WriteUsers []string`
   - Generate Samba config:
     ```ini
@@ -327,7 +328,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - When `security_mode == "private"`: `guest ok = no`, `valid users` required
   - When `security_mode == "secure"`: `valid users` + per-user read/write lists
 
-- [ ] **Recycle bin** — Deleted files go to recycle bin instead of permanent delete
+- [x] **Recycle bin** — Deleted files go to recycle bin instead of permanent delete
   - For shares with `RecycleBin: true`, add to Samba config:
     ```ini
     vfs objects = recycle
@@ -338,7 +339,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Add purge cron: `find /mnt/user/<share>/.Recycle.Bin -mtime +30 -delete`
   - Run purge via scheduled task system (see section 9)
 
-- [ ] **Allocation methods** — Control which disk gets new files
+- [x] **Allocation methods** — Control which disk gets new files
   - `"mfs"` (Most Free Space): mergerfs `category.create=mfs` — writes to disk with most free space
   - `"lfs"` (Least Free Space / Fill-Up): mergerfs `category.create=lfs` — fills one disk before moving to next
   - `"ff"` (First Found / High-Water): mergerfs `category.create=ff` — writes to first disk with enough space
@@ -350,7 +351,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 
 > Create `api/internal/app/manager.go`. Communicates with Docker via its Unix socket API.
 
-- [ ] **Docker container management** — List, inspect, start, stop, remove containers
+- [x] **Docker container management** — List, inspect, start, stop, remove containers
   - Use Go's `net/http` with Unix socket transport (no external Docker SDK needed):
     ```go
     client := &http.Client{
@@ -369,16 +370,16 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Define `Container` struct matching Docker API: name, image, state, ports, mounts
   - Add endpoints: `GET /api/apps`, `POST /api/apps/{id}/start`, `POST /api/apps/{id}/stop`, `DELETE /api/apps/{id}`
 
-- [ ] **Container logs** — Stream container logs
+- [x] **Container logs** — Stream container logs
   - `Manager.GetLogs(id string, lines int) (string, error)` → `GET /containers/{id}/logs?stdout=true&stderr=true&tail=<lines>`
   - Add endpoint: `GET /api/apps/{id}/logs?lines=100`
 
-- [ ] **Container stats** — CPU, memory, network usage
+- [x] **Container stats** — CPU, memory, network usage
   - `Manager.GetStats(id string) (*ContainerStats, error)` → `GET /containers/{id}/stats?stream=false`
   - Parse Docker stats response into simple struct: `CPUPercent`, `MemUsage`, `MemLimit`, `NetIn`, `NetOut`
   - Add endpoint: `GET /api/apps/{id}/stats`
 
-- [ ] **Parse Unraid CA templates** — Convert XML app templates to JSON catalog
+- [x] **Parse Unraid CA templates** — Convert XML app templates to JSON catalog
   - Unraid Community Applications templates are XML files in public GitHub repos
   - Clone/download templates repo, parse each template XML:
     ```xml
@@ -395,7 +396,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Cache parsed templates in memory, refresh periodically
   - Add endpoint: `GET /api/apps/templates?category=Media&search=plex`
 
-- [ ] **Install from template** — Create container from template config
+- [x] **Install from template** — Create container from template config
   - `Manager.InstallApp(template AppTemplate, overrides map[string]string) error`
   - Build Docker create request from template:
     ```json
@@ -412,19 +413,19 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Then `POST /containers/{id}/start`
   - Pull image first if not present: `POST /images/create?fromImage=plexinc/pms-docker`
 
-- [ ] **App update detection** — Compare running image digest vs registry
+- [x] **App update detection** — Compare running image digest vs registry
   - For each running container: get image digest (`GET /images/{id}/json` → `RepoDigests`)
   - Compare against registry: `GET https://registry-1.docker.io/v2/<repo>/manifests/latest`
   - If digests differ, mark container as `update_available: true`
   - Add endpoint: `GET /api/apps/updates`
 
-- [ ] **Docker Compose support** — Run compose files
+- [x] **Docker Compose support** — Run compose files
   - `Manager.ComposeUp(composePath string) error` → `exec.Command("docker", "compose", "-f", composePath, "up", "-d")`
   - `Manager.ComposeDown(composePath string) error` → `docker compose -f ... down`
   - Store compose file paths in config
   - Add endpoints: `POST /api/apps/compose/up`, `POST /api/apps/compose/down`
 
-- [ ] **Network management** — Create Docker networks
+- [x] **Network management** — Create Docker networks
   - `Manager.CreateNetwork(name, driver string) error` → `POST /networks/create {"Name": "...", "Driver": "bridge|host|macvlan"}`
   - Required for macvlan setups (giving containers their own IP)
   - Add endpoint: `POST /api/apps/networks`
@@ -435,7 +436,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 
 > Create `api/internal/notify/manager.go`. Event-driven architecture.
 
-- [ ] **Event framework** — Internal event emitter with typed events
+- [x] **Event framework** — Internal event emitter with typed events
   - Define event types as constants:
     ```go
     type EventType string
@@ -460,7 +461,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Other managers call `notifyMgr.Emit(...)` when things happen
   - Inject `notify.Manager` into other managers that need to emit events
 
-- [ ] **Discord webhook** — Send notifications to a Discord channel
+- [x] **Discord webhook** — Send notifications to a Discord channel
   - Add provider `DiscordProvider` with `WebhookURL string`
   - Send via HTTP POST:
     ```go
@@ -469,22 +470,22 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
     ```
   - Support rich embeds with color coding (green=info, yellow=warning, red=critical)
 
-- [ ] **Pushover** — Push notifications to mobile
+- [x] **Pushover** — Push notifications to mobile
   - Add provider `PushoverProvider` with `UserKey, AppToken string`
   - POST to `https://api.pushover.net/1/messages.json` with `token`, `user`, `message`, `priority`
 
-- [ ] **Email (SMTP)** — Send email notifications
+- [x] **Email (SMTP)** — Send email notifications
   - Add provider `EmailProvider` with `Host, Port, Username, Password, From, To string`
   - Use Go's `net/smtp` package: `smtp.SendMail(host+":"+port, auth, from, []string{to}, msg)`
   - Support TLS via `tls.Config`
 
-- [ ] **Apprise wrapper** — Multi-provider via CLI tool
+- [x] **Apprise wrapper** — Multi-provider via CLI tool
   - Add provider `AppriseProvider` with `URLs []string`
   - Shell out: `exec.Command("apprise", "-t", title, "-b", body, urls...)`
   - Apprise supports 80+ notification services in one CLI tool
   - Install check: `exec.LookPath("apprise")`
 
-- [ ] **Notification settings API** — Configure providers via REST
+- [x] **Notification settings API** — Configure providers via REST
   - Store config in `/etc/proxmaid/notifications.json`
   - Define `NotifyConfig` struct with provider configs
   - Add endpoints:
@@ -498,7 +499,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 ## 7. System & User Management
 
 ### 7.1 UPS Integration (NUT)
-- [ ] **UPS status via Network UPS Tools (NUT)**
+- [x] **UPS status via Network UPS Tools (NUT)**
   - Add to `system.Manager`: `GetUPSStatus() (*UPSStatus, error)`
   - Parse output of `upsc <upsname>@localhost` — key fields: `ups.status`, `battery.charge`, `battery.runtime`
   - Define `UPSStatus` struct: `Online bool`, `BatteryPct int`, `RuntimeSec int`, `Load float64`
@@ -509,7 +510,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Mock mode: return `{Online: true, BatteryPct: 100, RuntimeSec: 3600}`
 
 ### 7.2 Syslog Viewer
-- [ ] **Tail system logs via journalctl**
+- [x] **Tail system logs via journalctl**
   - Add to `system.Manager`: `GetLogs(lines int, unit string) ([]LogEntry, error)`
   - Run: `journalctl --no-pager -n <lines> -o json` (optionally `-u <unit>` for specific service)
   - Parse JSON output into `LogEntry` struct: `Timestamp`, `Unit`, `Priority`, `Message`
@@ -517,14 +518,14 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Mock mode: return sample log entries
 
 ### 7.3 Timezone Configuration
-- [ ] **Get/set timezone via timedatectl**
+- [x] **Get/set timezone via timedatectl**
   - Add `system.Manager.GetTimezone() (string, error)` — parse `timedatectl show -p Timezone --value`
   - Add `system.Manager.SetTimezone(tz string) error` — `timedatectl set-timezone <tz>`
   - Add endpoint: `GET /api/system/timezone`, `PUT /api/system/timezone` with body `{"timezone": "America/New_York"}`
   - Mock mode: store timezone in memory
 
 ### 7.4 Web UI Authentication
-- [ ] **Session-based auth for the Proxmaid UI**
+- [x] **Session-based auth for the Proxmaid UI**
   - Add `api/internal/auth/manager.go` with JWT or session cookie approach
   - Store credentials in `/etc/proxmaid/auth.json` (bcrypt hashed)
   - Middleware: check `Authorization: Bearer <token>` header on all `/api/*` routes except `/api/health`
@@ -535,7 +536,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - UI: add login page, store token in `localStorage`, include in API headers
 
 ### 7.5 User Management
-- [ ] **System users for share access** (see Share Manager section 4 for details)
+- [x] **System users for share access** (see Share Manager section 4 for details)
   - This is part of the Share Manager — `share.Manager.CreateUser()`, etc.
   - Web UI user management page is in Settings (section 10)
 
@@ -549,30 +550,30 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 
 ### 8.2 Remaining
 
-- [ ] **Share CRUD endpoints** — Wire `share.Manager` into router
+- [x] **Share CRUD endpoints** — Wire `share.Manager` into router
   - Add `shareMgr *share.Manager` param to `NewRouter()`
   - Register: `GET/POST /api/shares`, `GET/PUT/DELETE /api/shares/{name}`
   - Initialize in `main.go`: `shareMgr := share.NewManager(sysMgr.MockMode)`
 
-- [ ] **App management endpoints** — Wire `app.Manager` into router
+- [x] **App management endpoints** — Wire `app.Manager` into router
   - Add `appMgr *app.Manager` param to `NewRouter()`
   - Register: `GET /api/apps`, `POST /api/apps/{id}/start`, etc.
   - Initialize in `main.go`: `appMgr := app.NewManager(sysMgr.MockMode)`
 
-- [ ] **Notification config endpoints** — Wire `notify.Manager`
+- [x] **Notification config endpoints** — Wire `notify.Manager`
   - As described in section 6
 
-- [ ] **WebSocket endpoint** — Real-time dashboard updates
+- [x] **WebSocket endpoint** — Real-time dashboard updates (implemented as SSE)
   - Add `GET /api/ws` using `golang.org/x/net/websocket` or `gorilla/websocket`
   - On connect: subscribe client to event stream
   - Broadcast: array status changes, mover progress, notification events
   - UI: replace 5-second polling with WebSocket connection in `api.ts`
 
-- [ ] **Authentication middleware** — Protect endpoints
+- [x] **Authentication middleware** — Protect endpoints
   - As described in section 7.4
   - Apply as middleware wrapping the existing mux, skip `/api/health` and `/api/auth/*`
 
-- [ ] **Rate limiting** — Prevent API abuse
+- [x] **Rate limiting** — Prevent API abuse
   - Use `golang.org/x/time/rate` — token bucket per IP
   - Default: 100 requests/minute
   - Apply as middleware (outermost layer): if `!limiter.Allow()` → `429 Too Many Requests`
@@ -583,28 +584,28 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 
 > Implement a generic scheduler in `api/internal/scheduler/manager.go`.
 
-- [ ] **Task scheduler framework**
+- [x] **Task scheduler framework**
   - Use `github.com/robfig/cron/v3` for cron expression parsing
   - Define `ScheduledTask` struct: `Name`, `Schedule (cron)`, `Enabled`, `LastRun`, `NextRun`, `Action func()`
   - `Manager.AddTask(task ScheduledTask)` — registers with cron runner
   - `Manager.ListTasks() []ScheduledTask` — returns all registered tasks
   - Add endpoints: `GET /api/tasks`, `PUT /api/tasks/{name}` (update schedule/enabled)
 
-- [ ] **Scheduled parity check** — Run `nmdctl check` on schedule
+- [x] **Scheduled parity check** — Run `nmdctl check` on schedule
   - Default schedule: `0 0 1 * *` (1st of each month at midnight)
   - Task action: `arrayMgr.Check("CORRECT")`
   - Emit `EventParityDone` when complete
 
-- [ ] **Parity check tuning** — Pause during peak hours
+- [x] **Parity check tuning** — Pause during peak hours
   - Write `pause` to `/proc/nmdcmd` to pause, `resume` to resume via `system.Manager.WriteNmdcmd()`
   - Add schedule config: `pause_hours: "08:00-22:00"` — pause during business hours
   - Background goroutine checks current time against pause window
 
-- [ ] **Scheduled SMART tests** — Run short/long SMART tests
+- [x] **Scheduled SMART tests** — Run short/long SMART tests
   - Task action: `exec.Command("smartctl", "-t", "short", device)` for each disk
   - Short test: weekly. Long test: monthly.
 
-- [ ] **Recycle bin purge** — Clean old deleted files
+- [x] **Recycle bin purge** — Clean old deleted files
   - Task action: `exec.Command("find", "/mnt/user", "-path", "*/.Recycle.Bin/*", "-mtime", "+30", "-delete")`
   - Default: daily purge of files older than 30 days
 
@@ -613,25 +614,25 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 ## 10. Frontend UI (`ui/`)
 
 ### 10.1 Design System — Remaining
-- [ ] **Toast/notification component** — Slide-in notification for API actions
+- [x] **Toast/notification component** — Slide-in notification for API actions
   - Create `ui/src/components/Toast.tsx`
   - Use React context/provider pattern: `<ToastProvider>` wraps app, `useToast()` hook
   - Auto-dismiss after 5 seconds, support success/error/warning variants
   - Show on: array start/stop, mover trigger, pool create/delete, errors
 
-- [ ] **Modal/dialog component** — Confirmation dialogs, detail drawers
+- [x] **Modal/dialog component** — Confirmation dialogs, detail drawers
   - Create `ui/src/components/Modal.tsx`
   - Props: `isOpen`, `onClose`, `title`, `children`
   - Glassmorphism styling: `backdrop-filter: blur(20px)`, dark overlay
   - Use for: delete confirmations, disk detail view, array creation wizard
 
-- [ ] **Form input components** — Consistent form controls
+- [x] **Form input components** — Consistent form controls
   - Create `ui/src/components/FormInputs.tsx`
   - Components: `TextInput`, `Select`, `Toggle`, `Slider`, `NumberInput`
   - All use CSS variables from `globals.css` for colors
   - Include label, error state, disabled state
 
-- [ ] **Loading skeleton** — Placeholder while data loads
+- [x] **Loading skeleton** — Placeholder while data loads
   - Create `ui/src/components/Skeleton.tsx`
   - Animated pulse effect on glass card backgrounds
   - Variants: `SkeletonCard`, `SkeletonTable`, `SkeletonText`
@@ -643,9 +644,9 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 
 ### 10.2 Dashboard (`/`) — Remaining
 - [ ] **Real-time updates** — Replace polling with WebSocket (after backend WS is done)
-- [ ] **Cache usage widget** — Small card showing each pool's usage bar
-- [ ] **Mover status widget** — Shows last run, next run, or progress if running
-- [ ] **Recent activity feed** — Last 10 events from notification system
+- [x] **Cache usage widget** — Small card showing each pool's usage bar
+- [x] **Mover status widget** — Shows last run, next run, or progress if running
+- [x] **Recent activity feed** — Last 10 events from notification system
 - [ ] **System health overview** — CPU, RAM, disk temps from `/proc/stat` + SMART cache
 
 ### 10.3 Array Manager (`/array`) — Remaining
@@ -657,43 +658,43 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 - [ ] **Resync speed graph** — Plot resync progress over time using simple SVG line chart
 
 ### 10.4 Cache Page (`/cache`) — Remaining
-- [ ] **Edit mover config** — Inline editable fields (schedule, threshold, toggle)
+- [x] **Edit mover config** — Inline editable fields (schedule, threshold, toggle)
 - [ ] **Create pool dialog** — Modal with device picker, filesystem dropdown, name input
 - [ ] **Delete pool confirm** — Modal with "type pool name to confirm" pattern
 - [ ] **Pool device management** — Add/remove devices from existing pool
 
 ### 10.5 Disks Page (`/disks` — NEW)
-- [ ] Create `ui/src/app/disks/page.tsx`
-- [ ] **Disk inventory table** — Columns: device, model, serial, size, temp, health, mount, type badge
-- [ ] **SMART detail drawer** — Click row → slide-in with full SMART attributes
+- [x] Create `ui/src/app/disks/page.tsx`
+- [x] **Disk inventory table** — Columns: device, model, serial, size, temp, health, mount, type badge
+- [x] **SMART detail drawer** — Click row → slide-in with full SMART attributes
 - [ ] **Wipe/format actions** — Buttons with confirmation modal (destructive action)
-- [ ] **Disk identification** — "Blink LED" button per disk
-- [ ] **Filters** — Toggle: show unassigned only, filter by type (HDD/SSD/NVMe)
+- [x] **Disk identification** — "Blink LED" button per disk
+- [x] **Filters** — Toggle: show unassigned only, filter by type (HDD/SSD/NVMe)
 
 ### 10.6 Shares Page (`/shares` — NEW)
-- [ ] Create `ui/src/app/shares/page.tsx`
-- [ ] **Share list** — Cards with usage bars, export badges (SMB/NFS), cache policy badge
-- [ ] **Create share dialog** — Name, export type checkboxes, cache policy dropdown, allocation method
+- [x] Create `ui/src/app/shares/page.tsx`
+- [x] **Share list** — Cards with usage bars, export badges (SMB/NFS), cache policy badge
+- [x] **Create share dialog** — Name, export type checkboxes, cache policy dropdown, allocation method
 - [ ] **Share settings editor** — Inline edit ACLs, included/excluded disks, min free space
-- [ ] **User management panel** — List users, add/remove, set per-share permissions
+- [x] **User management panel** — List users, add/remove, set per-share permissions
 - [ ] **Connected clients** — List active SMB/NFS connections per share (`smbstatus` / `showmount`)
 
 ### 10.7 Apps Page (`/apps` — NEW)
-- [ ] Create `ui/src/app/apps/page.tsx`
-- [ ] **Installed apps dashboard** — Cards: app icon, name, status indicator, start/stop/restart buttons
+- [x] Create `ui/src/app/apps/page.tsx`
+- [x] **Installed apps dashboard** — Cards: app icon, name, status indicator, start/stop/restart buttons
 - [ ] **App store browser** — Grid of template cards with icon, name, category badge, install button
 - [ ] **Category sidebar** — Filter: Media, Networking, Productivity, Tools, etc.
 - [ ] **Search** — Filter templates by name, description, repository
 - [ ] **Install wizard** — Multi-step: configure ports, volumes (point to shares), env vars → create
-- [ ] **App detail view** — Logs tab, stats tab (CPU/mem chart), settings tab
+- [x] **App detail view** — Logs tab, stats tab (CPU/mem chart), settings tab
 
 ### 10.8 Settings Page (`/settings` — NEW)
-- [ ] Create `ui/src/app/settings/page.tsx`
+- [x] Create `ui/src/app/settings/page.tsx`
 - [ ] **Array config** — Stripe cache size, auto-start on boot toggle
 - [ ] **Network settings** — Display hostname, IP (read from system)
-- [ ] **Notification providers** — Add/edit/test Discord/email/Pushover configs
-- [ ] **Scheduled tasks** — Table of tasks with schedule, enabled toggle, last run
-- [ ] **System info card** — Kernel version, NonRAID module version, API version, uptime
+- [x] **Notification providers** — Add/edit/test Discord/email/Pushover configs
+- [x] **Scheduled tasks** — Table of tasks with schedule, enabled toggle, last run
+- [x] **System info card** — Kernel version, NonRAID module version, API version, uptime
 - [ ] **Backup/restore** — Download `/etc/proxmaid/*.json` as ZIP, upload to restore
 - [ ] **Theme preference** — Light/dark toggle (dark is default)
 
@@ -734,7 +735,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 ## 12. Infrastructure & Packaging
 
 ### 12.1 Systemd
-- [ ] **`proxmaid.service`** — Main API daemon
+- [x] **`proxmaid.service`** — Main API daemon
   ```ini
   [Unit]
   Description=Proxmaid Storage Management API
@@ -750,11 +751,11 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   [Install]
   WantedBy=multi-user.target
   ```
-- [ ] **Watchdog** — Restart on failure with exponential backoff
+- [x] **Watchdog** — Restart on failure with exponential backoff
   - Use `RestartSec=5` with `StartLimitIntervalSec=300`, `StartLimitBurst=5`
 
 ### 12.2 Build System
-- [ ] **Top-level Makefile**
+- [x] **Top-level Makefile**
   ```makefile
   build: build-api build-ui
   build-api:
@@ -767,10 +768,10 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
       dpkg-deb --build dist/ proxmaid_$(VERSION).deb
   ```
 - [ ] **Embed UI in Go binary** — Use `embed.FS` to serve static files from the Go binary, no separate web server needed
-- [ ] **Version injection** — `-ldflags "-X main.version=$(git describe --tags)"`
+- [x] **Version injection** — `-ldflags "-X main.version=$(git describe --tags)"`
 
 ### 12.3 Debian Packaging
-- [ ] **`.deb` package structure**
+- [x] **`.deb` package structure**
   ```
   proxmaid_0.1.0/
   ├── DEBIAN/
@@ -796,20 +797,20 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - Or API endpoint: `POST /api/system/reload`
 
 ### 12.5 CI/CD
-- [ ] **GitHub Actions: Go** — `go test`, `go vet`, `golangci-lint` on push/PR
-- [ ] **GitHub Actions: UI** — `npm run build`, `npm run lint` on push/PR
-- [ ] **Release workflow** — On tag push: build `.deb`, create GitHub release with changelog
-- [ ] **Automated `.deb` builds** — GitHub Actions builds and uploads `.deb` artifacts
+- [x] **GitHub Actions: Go** — `go test`, `go vet`, `golangci-lint` on push/PR
+- [x] **GitHub Actions: UI** — `npm run build`, `npm run lint` on push/PR
+- [x] **Release workflow** — On tag push: build `.deb`, create GitHub release with changelog
+- [x] **Automated `.deb` builds** — GitHub Actions builds and uploads `.deb` artifacts
 
 ---
 
 ## 13. Testing — Remaining
 
-- [ ] **Share manager tests** — `api/internal/share/manager_test.go`
+- [x] **Share manager tests** — `api/internal/share/manager_test.go`
   - Test CRUD, SMB config generation, NFS export generation, user management
   - Mock: don't actually call `useradd` or write to `/etc/samba/`
 
-- [ ] **App manager tests** — `api/internal/app/manager_test.go`
+- [x] **App manager tests** — `api/internal/app/manager_test.go`
   - Mock Docker socket responses with `httptest.NewServer()`
   - Test: list containers, start/stop, template parsing
 

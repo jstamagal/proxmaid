@@ -8,14 +8,46 @@ interface ApiResponse<T> {
     error?: string;
 }
 
+// Token management
+export function getToken(): string | null {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('proxmaid_token');
+}
+
+export function setToken(token: string): void {
+    localStorage.setItem('proxmaid_token', token);
+}
+
+export function clearToken(): void {
+    localStorage.removeItem('proxmaid_token');
+}
+
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<ApiResponse<T>> {
+    const token = getToken();
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+    };
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const res = await fetch(`${API_BASE}${path}`, {
         ...options,
         headers: {
-            'Content-Type': 'application/json',
+            ...headers,
             ...options?.headers,
         },
     });
+
+    // Handle 401 - redirect to login
+    if (res.status === 401 && !path.startsWith('/api/auth/')) {
+        clearToken();
+        if (typeof window !== 'undefined') {
+            window.location.href = '/login';
+        }
+        return { ok: false, error: 'authentication required' };
+    }
+
     return res.json();
 }
 
@@ -102,6 +134,98 @@ export interface MoverStatus {
     config: MoverConfig;
 }
 
+export interface Share {
+    name: string;
+    path: string;
+    cache_policy: string;
+    alloc_method: string;
+    export_smb: boolean;
+    export_nfs: boolean;
+    security_mode: string;
+    included_disks: number[];
+    excluded_disks: number[];
+    min_free_space: string;
+    recycle_bin: boolean;
+    read_users: string[];
+    write_users: string[];
+}
+
+export interface Container {
+    id: string;
+    name: string;
+    image: string;
+    state: string;
+    status: string;
+    ports: { host_port: number; container_port: number; protocol: string }[];
+    mounts: { source: string; destination: string; mode: string }[];
+    created: string;
+    labels: Record<string, string>;
+}
+
+export interface ContainerStats {
+    cpu_percent: number;
+    mem_usage: number;
+    mem_limit: number;
+    net_in: number;
+    net_out: number;
+}
+
+export interface UPSStatus {
+    online: boolean;
+    battery_pct: number;
+    runtime_sec: number;
+    load: number;
+}
+
+export interface LogEntry {
+    timestamp: string;
+    unit: string;
+    priority: number;
+    message: string;
+}
+
+export interface NotifyConfig {
+    discord?: { enabled: boolean; webhook_url: string };
+    pushover?: { enabled: boolean; user_key: string; app_token: string };
+    email?: { enabled: boolean; host: string; port: number; username: string; password: string; from: string; to: string };
+    apprise?: { enabled: boolean; urls: string[] };
+}
+
+export interface NotifyEvent {
+    type: string;
+    message: string;
+    severity: string;
+    timestamp: string;
+}
+
+export interface ScheduledTask {
+    name: string;
+    schedule: string;
+    enabled: boolean;
+    last_run: string;
+    next_run: string;
+}
+
+export interface AppTemplate {
+    name: string;
+    repository: string;
+    icon: string;
+    category: string;
+    description: string;
+    ports: { container: number; host: number; protocol: string }[];
+    volumes: { container: string; host: string; description: string }[];
+    env: { name: string; value: string; description: string }[];
+    network: string;
+    webui: string;
+}
+
+export interface DockerNetwork {
+    id: string;
+    name: string;
+    driver: string;
+    scope: string;
+}
+
 // API functions
 export const api = {
     health: () => fetchApi<string>('/api/health'),
@@ -116,6 +240,15 @@ export const api = {
     disks: {
         list: () => fetchApi<SystemDisk[]>('/api/disks'),
         smart: (device: string) => fetchApi<SmartHealth>(`/api/disks/smart?device=${device}`),
+        health: () => fetchApi<Record<string, SmartHealth>>('/api/disks/health'),
+        powerState: (device: string) => fetchApi<{ device: string; state: string }>(`/api/disks/power-state?device=${device}`),
+        wipe: (device: string) => fetchApi<string>('/api/disks/wipe', { method: 'POST', body: JSON.stringify({ device, confirm: true }) }),
+        partition: (device: string) => fetchApi<string>('/api/disks/partition', { method: 'POST', body: JSON.stringify({ device, confirm: true }) }),
+        format: (device: string, fs_type = 'xfs') => fetchApi<string>('/api/disks/format', { method: 'POST', body: JSON.stringify({ device, fs_type, confirm: true }) }),
+        mount: (device: string, mount_point: string) => fetchApi<string>('/api/disks/mount', { method: 'POST', body: JSON.stringify({ device, mount_point }) }),
+        unmount: (mount_point: string) => fetchApi<string>('/api/disks/unmount', { method: 'POST', body: JSON.stringify({ mount_point }) }),
+        spindown: (device: string) => fetchApi<string>('/api/disks/spindown', { method: 'POST', body: JSON.stringify({ device }) }),
+        identify: (device: string) => fetchApi<string>('/api/disks/identify', { method: 'POST', body: JSON.stringify({ device }) }),
     },
 
     cache: {
@@ -139,5 +272,63 @@ export const api = {
 
     system: {
         module: () => fetchApi<{ loaded: boolean }>('/api/system/module'),
+        ups: () => fetchApi<UPSStatus>('/api/system/ups'),
+        logs: (lines = 100, unit = '') => fetchApi<LogEntry[]>(`/api/system/logs?lines=${lines}${unit ? `&unit=${unit}` : ''}`),
+        timezone: () => fetchApi<{ timezone: string }>('/api/system/timezone'),
+        setTimezone: (timezone: string) => fetchApi<string>('/api/system/timezone', { method: 'PUT', body: JSON.stringify({ timezone }) }),
+    },
+
+    shares: {
+        list: () => fetchApi<Share[]>('/api/shares'),
+        get: (name: string) => fetchApi<Share>(`/api/shares/${name}`),
+        create: (data: Partial<Share>) => fetchApi<Share>('/api/shares', { method: 'POST', body: JSON.stringify(data) }),
+        update: (name: string, data: Partial<Share>) => fetchApi<Share>(`/api/shares/${name}`, { method: 'PUT', body: JSON.stringify(data) }),
+        delete: (name: string) => fetchApi<string>(`/api/shares/${name}`, { method: 'DELETE' }),
+    },
+
+    users: {
+        list: () => fetchApi<string[]>('/api/users'),
+        create: (username: string, password: string) => fetchApi<string>('/api/users', { method: 'POST', body: JSON.stringify({ username, password }) }),
+        delete: (name: string) => fetchApi<string>(`/api/users/${name}`, { method: 'DELETE' }),
+    },
+
+    apps: {
+        list: () => fetchApi<Container[]>('/api/apps'),
+        start: (id: string) => fetchApi<string>(`/api/apps/${id}/start`, { method: 'POST' }),
+        stop: (id: string) => fetchApi<string>(`/api/apps/${id}/stop`, { method: 'POST' }),
+        remove: (id: string) => fetchApi<string>(`/api/apps/${id}`, { method: 'DELETE' }),
+        logs: (id: string, lines = 100) => fetchApi<string>(`/api/apps/${id}/logs?lines=${lines}`),
+        stats: (id: string) => fetchApi<ContainerStats>(`/api/apps/${id}/stats`),
+        composeUp: (path: string) => fetchApi<string>('/api/apps/compose/up', { method: 'POST', body: JSON.stringify({ path }) }),
+        composeDown: (path: string) => fetchApi<string>('/api/apps/compose/down', { method: 'POST', body: JSON.stringify({ path }) }),
+        templates: (category = '', search = '') =>
+            fetchApi<AppTemplate[]>(`/api/apps/templates?category=${category}&search=${search}`),
+        install: (template: AppTemplate, overrides: Record<string, string>) =>
+            fetchApi<string>('/api/apps/install', { method: 'POST', body: JSON.stringify({ template, overrides }) }),
+        updates: () => fetchApi<Record<string, boolean>>('/api/apps/updates'),
+        networks: () => fetchApi<DockerNetwork[]>('/api/apps/networks'),
+        createNetwork: (name: string, driver: string) =>
+            fetchApi<string>('/api/apps/networks', { method: 'POST', body: JSON.stringify({ name, driver }) }),
+    },
+
+    tasks: {
+        list: () => fetchApi<ScheduledTask[]>('/api/tasks'),
+        update: (name: string, schedule: string, enabled: boolean) =>
+            fetchApi<string>(`/api/tasks/${name}`, { method: 'PUT', body: JSON.stringify({ schedule, enabled }) }),
+        trigger: (name: string) => fetchApi<string>(`/api/tasks/${name}/run`, { method: 'POST' }),
+    },
+
+    notifications: {
+        config: () => fetchApi<NotifyConfig>('/api/notifications/config'),
+        updateConfig: (config: NotifyConfig) => fetchApi<string>('/api/notifications/config', { method: 'PUT', body: JSON.stringify(config) }),
+        test: () => fetchApi<string>('/api/notifications/test', { method: 'POST' }),
+        history: () => fetchApi<NotifyEvent[]>('/api/notifications/history'),
+    },
+
+    auth: {
+        login: (username: string, password: string) =>
+            fetchApi<{ token: string }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+        logout: () => fetchApi<string>('/api/auth/logout', { method: 'POST' }),
+        me: () => fetchApi<{ username: string; expires_at: string }>('/api/auth/me'),
     },
 };

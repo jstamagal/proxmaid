@@ -6,9 +6,14 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/proxmaid/proxmaid/internal/app"
 	"github.com/proxmaid/proxmaid/internal/array"
+	"github.com/proxmaid/proxmaid/internal/auth"
 	"github.com/proxmaid/proxmaid/internal/cache"
 	"github.com/proxmaid/proxmaid/internal/disk"
+	"github.com/proxmaid/proxmaid/internal/notify"
+	"github.com/proxmaid/proxmaid/internal/scheduler"
+	"github.com/proxmaid/proxmaid/internal/share"
 	"github.com/proxmaid/proxmaid/internal/system"
 )
 
@@ -17,7 +22,12 @@ func setupTestRouter() http.Handler {
 	arrayMgr := array.NewManager(sysMgr)
 	diskMgr := disk.NewManager(true)
 	cacheMgr := cache.NewManager(true, nil)
-	return NewRouter(arrayMgr, sysMgr, diskMgr, cacheMgr)
+	shareMgr := share.NewManager(true)
+	appMgr := app.NewManager(true)
+	notifyMgr := notify.NewManager(true)
+	authMgr := auth.NewManager(true)
+	schedMgr := scheduler.NewManager(true)
+	return NewRouter(arrayMgr, sysMgr, diskMgr, cacheMgr, shareMgr, appMgr, notifyMgr, authMgr, schedMgr)
 }
 
 func TestHealthEndpoint(t *testing.T) {
