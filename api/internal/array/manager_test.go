@@ -3,6 +3,8 @@ package array
 import (
 	"strings"
 	"testing"
+
+	"github.com/proxmaid/proxmaid/internal/system"
 )
 
 func TestParseNmdstat_Started(t *testing.T) {
@@ -248,4 +250,50 @@ mdNumDisks=3
 		t.Errorf("expected STARTED, got %s", status.State)
 	}
 	_ = strings.Contains("", "") // silence import
+}
+
+func TestAssignDiskInvalidPath(t *testing.T) {
+	// This test verifies path validation happens before checking array state
+	// In mock mode, AssignDisk will check validation first
+	sysMgr := &system.Manager{MockMode: true}
+	m := NewManager(sysMgr)
+	
+	// Test invalid device path - should fail validation before checking array state
+	err := m.AssignDisk(0, "/etc/passwd")
+	if err == nil {
+		t.Error("expected error for invalid device path")
+	}
+	if !strings.Contains(err.Error(), "invalid device path") {
+		t.Errorf("expected 'invalid device path' error, got: %v", err)
+	}
+	
+	// Test path traversal attempt - should fail validation
+	err = m.AssignDisk(0, "/dev/../etc/passwd")
+	if err == nil {
+		t.Error("expected error for path traversal attempt")
+	}
+	if !strings.Contains(err.Error(), "invalid device path") {
+		t.Errorf("expected 'invalid device path' error, got: %v", err)
+	}
+}
+
+func TestAssignDiskValidPath(t *testing.T) {
+	// This test verifies valid paths pass validation
+	// In mock mode, array is always STARTED, so this will fail with "array must be stopped"
+	sysMgr := &system.Manager{MockMode: true}
+	m := NewManager(sysMgr)
+	
+	// Test valid device path - should pass validation but fail on array state check
+	err := m.AssignDisk(0, "/dev/sda1")
+	if err == nil {
+		t.Error("expected error (mock array is STARTED, not STOPPED)")
+	}
+	// Should NOT be a validation error
+	if strings.Contains(err.Error(), "invalid device path") {
+		t.Errorf("should not be a validation error, got: %v", err)
+	}
+	// Should be an array state error
+	if !strings.Contains(err.Error(), "array must be stopped") {
+		t.Errorf("expected 'array must be stopped' error, got: %v", err)
+	}
 }
