@@ -15,9 +15,9 @@
 
 | Category            | Done | Remaining |
 |---------------------|------|-----------|
-| Storage Array (API) | 8    | 7         |
+| Storage Array (API) | 10   | 5         |
 | Disk Manager (API)  | 3    | 6         |
-| Cache & Tiering     | 5    | 7         |
+| Cache & Tiering     | 8    | 4         |
 | Shares (API)        | 0    | 8         |
 | Docker/Apps (API)   | 0    | 8         |
 | Notifications (API) | 0    | 6         |
@@ -100,16 +100,16 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 
 ### 1.2 Remaining
 
-- [ ] **Disk assignment API** — Assign a physical disk to an array slot
+- [x] **Disk assignment API** — Assign a physical disk to an array slot
   - Add `Manager.AssignDisk(slot int, devicePath string) error`
-  - Wraps `nmdctl assign <slot> <device>` (see `docs/nonraid/_research_array_mgmt.md`)
-  - In mock mode: update internal state, validate slot is empty (`DISK_NP`), device exists
+  - Wraps `nmdctl -u add <slot>:<device>` (see `docs/nonraid/_research_array_mgmt.md`)
+  - Precondition: array must be STOPPED
   - Add endpoint: `POST /api/array/assign` with body `{"slot": 1, "device": "/dev/sdb"}`
   - Router: decode JSON body, call `arrayMgr.AssignDisk()`, return status
 
-- [ ] **Disk unassignment API** — Remove a disk from a slot
+- [x] **Disk unassignment API** — Remove a disk from a slot
   - Add `Manager.UnassignDisk(slot int) error`
-  - Wraps `nmdctl unassign <slot>`
+  - Wraps `nmdctl -u unassign <slot>`
   - Precondition: array must be STOPPED (unassign not allowed while running)
   - Add endpoint: `POST /api/array/unassign` with body `{"slot": 1}`
 
@@ -199,7 +199,7 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
 
 ### 3.2 Remaining
 
-- [ ] **Real pool creation** — Actually partition, format, and mount devices
+- [x] **Real pool creation** — Actually partition, format, and mount devices
   - Modify `CreatePool()`: after validation, for each device in `req.Devices`:
     1. Call `disk.Manager.WipeDisk(device)`
     2. Call `disk.Manager.PartitionDisk(device)`
@@ -208,25 +208,25 @@ All responses use: `response{OK: bool, Data: interface{}, Error: string}`
   - If multiple devices: use `mergerfs` union mount (see mergerfs mount below)
   - Inject `disk.Manager` into `cache.Manager` constructor
 
-- [ ] **mergerfs mount** — Union-mount multiple cache devices
+- [x] **mergerfs mount** — Union-mount multiple cache devices
   - When pool has 2+ devices, create individual mount points `/mnt/cache/<name>/dev0`, `/mnt/cache/<name>/dev1`
   - Mount each device partition to its individual mount point
   - Run: `mergerfs -o defaults,allow_other,use_ino,category.create=mfs,moveonenospc=true /mnt/cache/<name>/dev0:/mnt/cache/<name>/dev1 /mnt/cache/<name>/merged`
   - The `mfs` (most free space) policy spreads writes across devices
-  - Store the merged path as `Pool.MountPoint`
+  - Store the merged path as `Pool.MountPoint`; `BranchMounts` used for unmount on delete
 
 - [ ] **Real mover execution** — Move cold files from cache to array
-  - Implement `executeMoverRun()` (currently a TODO placeholder):
-    1. `findColdFiles()` — walk `Pool.MountPoint`, find files with `mtime > AgeThreshold`
-    2. For each file: `rsync --checksum --remove-source-files <src> <dest>`
+  - Implement `executeMoverRun()`: findColdFiles + count implemented; rsync to array not yet
+    1. `findColdFiles()` — walk `Pool.MountPoint`, find files with `mtime > AgeThreshold` ✅
+    2. For each file: `rsync --checksum --remove-source-files <src> <dest>` (TODO)
     3. Dest path: mirror the directory structure under `/mnt/user/<share>/`
     4. Track progress: increment `BytesMoved` and `FilesMoved` after each file
     5. Publish event on completion (for notification system)
 
-- [ ] **Find cold files** — Walk cache mount, check mtime vs threshold
-  - Add `findColdFiles(poolMount string, threshold time.Duration) ([]string, error)`
+- [x] **Find cold files** — Walk cache mount, check mtime vs threshold
+  - Add `FindColdFiles(poolMount string, threshold time.Duration) ([]string, error)`
   - Use `filepath.Walk()`, check `info.ModTime().Before(time.Now().Add(-threshold))`
-  - Parse `AgeThreshold` string: `"1d"` → 24h, `"12h"` → 12h, `"30m"` → 30m
+  - Parse `AgeThreshold` string via `ParseAgeThreshold()`: `"1d"` → 24h, `"12h"` → 12h, `"30m"` → 30m
   - Return list of absolute paths to move
 
 - [ ] **Scheduled mover** — Cron-style timer goroutine

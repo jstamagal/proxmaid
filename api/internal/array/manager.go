@@ -5,6 +5,7 @@ package array
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -130,6 +131,76 @@ func (m *Manager) Check(mode string) error {
 	out, err := m.sysMgr.RunNmdctl("check", mode)
 	if err != nil {
 		return fmt.Errorf("failed to start check: %s: %w", out, err)
+	}
+	return nil
+}
+
+// AssignDisk assigns a physical disk (or partition) to an array slot.
+// Uses nmdctl add SLOT:DEVICE in unattended mode. Array must be stopped.
+func (m *Manager) AssignDisk(slot int, devicePath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if slot < 0 || slot > 29 {
+		return fmt.Errorf("slot must be 0-29")
+	}
+	if devicePath == "" {
+		return fmt.Errorf("device path is required")
+	}
+
+	status, err := m.sysMgr.ReadNmdstat()
+	if err != nil {
+		return fmt.Errorf("failed to read array status: %w", err)
+	}
+	parsed, err := parseNmdstat(status)
+	if err != nil {
+		return err
+	}
+	if parsed.State != StateStopped {
+		return fmt.Errorf("array must be stopped to assign a disk (current state: %s)", parsed.State)
+	}
+
+	if m.sysMgr.MockMode {
+		fmt.Printf("[MOCK] nmdctl -u add %d:%s\n", slot, devicePath)
+		return nil
+	}
+
+	out, err := m.sysMgr.RunNmdctl("-u", "add", fmt.Sprintf("%d:%s", slot, devicePath))
+	if err != nil {
+		return fmt.Errorf("failed to assign disk: %s: %w", out, err)
+	}
+	return nil
+}
+
+// UnassignDisk removes the disk from the given slot. Array must be stopped.
+func (m *Manager) UnassignDisk(slot int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if slot < 0 || slot > 29 {
+		return fmt.Errorf("slot must be 0-29")
+	}
+
+	status, err := m.sysMgr.ReadNmdstat()
+	if err != nil {
+		return fmt.Errorf("failed to read array status: %w", err)
+	}
+	parsed, err := parseNmdstat(status)
+	if err != nil {
+		return err
+	}
+	if parsed.State != StateStopped {
+		return fmt.Errorf("array must be stopped to unassign a disk (current state: %s)", parsed.State)
+	}
+
+	if m.sysMgr.MockMode {
+		fmt.Printf("[MOCK] nmdctl -u unassign %d\n", slot)
+		return nil
+	}
+
+	out, err := m.sysMgr.RunNmdctl("-u", "unassign", strconv.Itoa(slot))
+	if err != nil {
+		return fmt.Errorf("failed to unassign disk: %s: %w", out, err)
 	}
 	return nil
 }

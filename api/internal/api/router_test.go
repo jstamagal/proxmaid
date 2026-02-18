@@ -16,7 +16,7 @@ func setupTestRouter() http.Handler {
 	sysMgr := &system.Manager{MockMode: true}
 	arrayMgr := array.NewManager(sysMgr)
 	diskMgr := disk.NewManager(true)
-	cacheMgr := cache.NewManager(true)
+	cacheMgr := cache.NewManager(true, nil)
 	return NewRouter(arrayMgr, sysMgr, diskMgr, cacheMgr)
 }
 

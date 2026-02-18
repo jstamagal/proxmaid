@@ -19,7 +19,8 @@ Thumbs.db
 
 # Next.js
 ui/.next/
-ui/out/
+ui/.next/*
+ui/out/*
 ui/node_modules/*
 ui/node_modules
 

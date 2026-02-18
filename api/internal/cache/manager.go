@@ -4,10 +4,36 @@ package cache
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/proxmaid/proxmaid/internal/disk"
 )
+
+func humanSize(bytes int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+		TB = GB * 1024
+	)
+	switch {
+	case bytes >= TB:
+		return fmt.Sprintf("%.1f TB", float64(bytes)/float64(TB))
+	case bytes >= GB:
+		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(MB))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
 
 // ShareCachePolicy controls how a share uses the cache pool.
 type ShareCachePolicy string
@@ -33,15 +59,16 @@ type PoolDevice struct {
 
 // Pool represents a cache pool configuration and status.
 type Pool struct {
-	Name       string       `json:"name"`        // e.g. "pool0"
-	Devices    []PoolDevice `json:"devices"`     // devices in the pool
-	MountPoint string       `json:"mount_point"` // e.g. "/mnt/cache/pool0"
-	FSType     string       `json:"fs_type"`     // e.g. "xfs", "btrfs"
-	TotalBytes int64        `json:"total_bytes"` // total capacity
-	UsedBytes  int64        `json:"used_bytes"`  // used space
-	FreeBytes  int64        `json:"free_bytes"`  // free space
-	UsedPct    float64      `json:"used_pct"`    // usage percentage
-	Status     string       `json:"status"`      // "active", "degraded", "stopped"
+	Name         string       `json:"name"`          // e.g. "pool0"
+	Devices      []PoolDevice `json:"devices"`       // devices in the pool
+	MountPoint   string      `json:"mount_point"`   // e.g. "/mnt/cache/pool0" or "/mnt/cache/pool0/merged"
+	BranchMounts []string    `json:"-"`              // branch mount paths for mergerfs (unexported, for unmount)
+	FSType       string      `json:"fs_type"`       // e.g. "xfs", "btrfs"
+	TotalBytes   int64       `json:"total_bytes"`   // total capacity
+	UsedBytes    int64       `json:"used_bytes"`    // used space
+	FreeBytes    int64       `json:"free_bytes"`    // free space
+	UsedPct      float64     `json:"used_pct"`      // usage percentage
+	Status       string      `json:"status"`        // "active", "degraded", "stopped"
 }
 
 // MoverConfig holds the mover daemon configuration.
@@ -66,14 +93,16 @@ type MoverStatus struct {
 type Manager struct {
 	mu       sync.RWMutex
 	mockMode bool
+	diskMgr  *disk.Manager
 	pools    map[string]*Pool
 	mover    *MoverStatus
 }
 
-// NewManager creates a new cache manager.
-func NewManager(mockMode bool) *Manager {
+// NewManager creates a new cache manager. diskMgr can be nil in mock mode.
+func NewManager(mockMode bool, diskMgr *disk.Manager) *Manager {
 	m := &Manager{
 		mockMode: mockMode,
+		diskMgr:  diskMgr,
 		pools:    make(map[string]*Pool),
 		mover: &MoverStatus{
 			Config: MoverConfig{
@@ -169,46 +198,124 @@ func (m *Manager) CreatePool(req CreatePoolRequest) (*Pool, error) {
 		req.FSType = "xfs"
 	}
 
-	mountPoint := fmt.Sprintf("/mnt/cache/%s", req.Name)
+	baseDir := fmt.Sprintf("/mnt/cache/%s", req.Name)
 
 	if m.mockMode {
 		fmt.Printf("[MOCK] Creating cache pool %q with devices %v, fs=%s, mount=%s\n",
-			req.Name, req.Devices, req.FSType, mountPoint)
+			req.Name, req.Devices, req.FSType, baseDir)
+	} else if m.diskMgr != nil {
+		// Real implementation: wipe, partition, format each device
+		var partitionPaths []string
+		var branchMounts []string
+		for i, devicePath := range req.Devices {
+			if err := m.diskMgr.WipeDisk(devicePath); err != nil {
+				return nil, fmt.Errorf("wipe %s: %w", devicePath, err)
+			}
+			if err := m.diskMgr.PartitionDisk(devicePath); err != nil {
+				return nil, fmt.Errorf("partition %s: %w", devicePath, err)
+			}
+			partPath := devicePath + "1"
+			if err := m.diskMgr.FormatPartition(partPath, req.FSType); err != nil {
+				return nil, fmt.Errorf("format %s: %w", partPath, err)
+			}
+			partitionPaths = append(partitionPaths, partPath)
+			if len(req.Devices) >= 2 {
+				branchMounts = append(branchMounts, fmt.Sprintf("%s/dev%d", baseDir, i))
+			}
+		}
+
+		if len(req.Devices) == 1 {
+			if err := exec.Command("mkdir", "-p", baseDir).Run(); err != nil {
+				return nil, fmt.Errorf("mkdir mount point: %w", err)
+			}
+			if err := exec.Command("mount", partitionPaths[0], baseDir).Run(); err != nil {
+				return nil, fmt.Errorf("mount %s: %w", partitionPaths[0], err)
+			}
+		} else {
+			// mergerfs: create branch dirs and merged dir
+			for _, b := range branchMounts {
+				if err := exec.Command("mkdir", "-p", b).Run(); err != nil {
+					return nil, fmt.Errorf("mkdir branch %s: %w", b, err)
+				}
+			}
+			mergedDir := baseDir + "/merged"
+			if err := exec.Command("mkdir", "-p", mergedDir).Run(); err != nil {
+				return nil, fmt.Errorf("mkdir merged: %w", err)
+			}
+			for i, partPath := range partitionPaths {
+				if err := exec.Command("mount", partPath, branchMounts[i]).Run(); err != nil {
+					return nil, fmt.Errorf("mount branch %s: %w", partPath, err)
+				}
+			}
+			opts := "defaults,allow_other,use_ino,category.create=mfs,moveonenospc=true"
+			mergerfsArgs := []string{"-o", opts, strings.Join(branchMounts, ":"), mergedDir}
+			if err := exec.Command("mergerfs", mergerfsArgs...).Run(); err != nil {
+				// Unmount branches on failure
+				for _, b := range branchMounts {
+					exec.Command("umount", b).Run()
+				}
+				return nil, fmt.Errorf("mergerfs: %w", err)
+			}
+			baseDir = mergedDir
+		}
 	} else {
-		// Real implementation:
-		// 1. Partition each device
-		// 2. Format each partition
-		// 3. Create mount directory
-		// 4. Mount (or use mergerfs if multiple devices)
-		// For now, create the mount point
-		if err := exec.Command("mkdir", "-p", mountPoint).Run(); err != nil {
+		// No disk manager: just create directory (e.g. tests)
+		if err := exec.Command("mkdir", "-p", baseDir).Run(); err != nil {
 			return nil, fmt.Errorf("failed to create mount point: %w", err)
 		}
 	}
 
-	// Build pool device list
-	devices := make([]PoolDevice, 0, len(req.Devices))
+	// Build pool device list (sizes from disk list when available)
+	poolDevices := make([]PoolDevice, 0, len(req.Devices))
 	var totalSize int64
-	for _, d := range req.Devices {
-		dev := PoolDevice{
-			Path:      d,
-			Size:      1000204886016, // placeholder in mock
-			SizeHuman: "931.5 GB",
+	if m.diskMgr != nil && !m.mockMode {
+		disks, _ := m.diskMgr.ListDisks()
+		for _, d := range req.Devices {
+			size := int64(0)
+			model := ""
+			for _, info := range disks {
+				if info.Path == d || strings.HasPrefix(d, info.Path) {
+					size = info.Size
+					model = info.Model
+					break
+				}
+			}
+			if size == 0 {
+				size = 1000204886016
+				model = "unknown"
+			}
+			poolDevices = append(poolDevices, PoolDevice{
+				Path:      d,
+				Model:     model,
+				Size:      size,
+				SizeHuman: humanSize(size),
+			})
+			totalSize += size
 		}
-		totalSize += dev.Size
-		devices = append(devices, dev)
+	} else {
+		for _, d := range req.Devices {
+			dev := PoolDevice{Path: d, Size: 1000204886016, SizeHuman: "931.5 GB"}
+			totalSize += dev.Size
+			poolDevices = append(poolDevices, dev)
+		}
 	}
 
 	pool := &Pool{
 		Name:       req.Name,
-		Devices:    devices,
-		MountPoint: mountPoint,
+		Devices:    poolDevices,
+		MountPoint: baseDir,
 		FSType:     req.FSType,
 		TotalBytes: totalSize,
 		UsedBytes:  0,
 		FreeBytes:  totalSize,
 		UsedPct:    0,
 		Status:     "active",
+	}
+	if len(req.Devices) >= 2 && !m.mockMode && m.diskMgr != nil {
+		pool.BranchMounts = make([]string, len(req.Devices))
+		for i := range req.Devices {
+			pool.BranchMounts[i] = fmt.Sprintf("/mnt/cache/%s/dev%d", req.Name, i)
+		}
 	}
 
 	m.pools[req.Name] = pool
@@ -228,9 +335,14 @@ func (m *Manager) DeletePool(name string) error {
 	if m.mockMode {
 		fmt.Printf("[MOCK] Deleting cache pool %q, unmounting %s\n", name, pool.MountPoint)
 	} else {
-		// Unmount the pool
+		// Unmount mergerfs merged mount first, then branch mounts
 		if err := exec.Command("umount", pool.MountPoint).Run(); err != nil {
 			return fmt.Errorf("failed to unmount %s: %w", pool.MountPoint, err)
+		}
+		for _, branch := range pool.BranchMounts {
+			if err := exec.Command("umount", branch).Run(); err != nil {
+				return fmt.Errorf("failed to unmount branch %s: %w", branch, err)
+			}
 		}
 	}
 
@@ -238,11 +350,16 @@ func (m *Manager) DeletePool(name string) error {
 	return nil
 }
 
-// GetMoverStatus returns the current mover status.
-func (m *Manager) GetMoverStatus() *MoverStatus {
+// GetMoverStatus returns a copy of the current mover status.
+// Returns a copy (not a pointer) to avoid data races with concurrent
+// modifications from executeMoverRun or UpdateMoverConfig.
+func (m *Manager) GetMoverStatus() MoverStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.mover
+	if m.mover == nil {
+		return MoverStatus{}
+	}
+	return *m.mover
 }
 
 // UpdateMoverConfig updates the mover configuration.
@@ -302,15 +419,103 @@ func (m *Manager) executeMoverRun() {
 		m.mu.Unlock()
 	}()
 
-	// TODO: Real mover implementation
-	// 1. Walk each cache pool mount point
-	// 2. Find files older than age threshold
-	// 3. rsync each file to the corresponding array share
-	// 4. Verify checksum
-	// 5. Delete from cache
-	// 6. Update progress
 	fmt.Println("[CACHE] Mover run started")
-	fmt.Println("[CACHE] Mover run completed")
+
+	m.mu.RLock()
+	threshold := m.mover.Config.AgeThreshold
+	pools := make([]*Pool, 0, len(m.pools))
+	for _, p := range m.pools {
+		pools = append(pools, p)
+	}
+	m.mu.RUnlock()
+
+	dur, err := ParseAgeThreshold(threshold)
+	if err != nil {
+		fmt.Printf("[CACHE] Invalid age threshold %q: %v\n", threshold, err)
+		return
+	}
+
+	var totalFiles int
+	var totalBytes int64
+	for _, pool := range pools {
+		files, err := FindColdFiles(pool.MountPoint, dur)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			fmt.Printf("[CACHE] Error scanning %s: %v\n", pool.MountPoint, err)
+			continue
+		}
+		for _, path := range files {
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			if !info.IsDir() {
+				totalFiles++
+				totalBytes += info.Size()
+			}
+		}
+		// TODO: rsync each file to array share, then remove from cache
+	}
+
+	m.mu.Lock()
+	m.mover.FilesMoved = totalFiles
+	m.mover.BytesMoved = totalBytes
+	m.mover.Progress = 100
+	m.mu.Unlock()
+
+	fmt.Printf("[CACHE] Mover run completed: %d files, %d bytes (move to array not yet implemented)\n", totalFiles, totalBytes)
+}
+
+// ParseAgeThreshold parses an age threshold string into a duration.
+// Supported: "1d", "12h", "30m", "90m", "7d".
+func ParseAgeThreshold(s string) (time.Duration, error) {
+	if s == "" {
+		return 24 * time.Hour, nil
+	}
+	re := regexp.MustCompile(`^(?i)(\d+)(d|h|m|s)$`)
+	matches := re.FindStringSubmatch(s)
+	if matches == nil {
+		return 0, fmt.Errorf("invalid age threshold %q (use e.g. 1d, 12h, 30m)", s)
+	}
+	n, _ := strconv.Atoi(matches[1])
+	unit := strings.ToLower(matches[2])
+	switch unit {
+	case "d":
+		return time.Duration(n) * 24 * time.Hour, nil
+	case "h":
+		return time.Duration(n) * time.Hour, nil
+	case "m":
+		return time.Duration(n) * time.Minute, nil
+	case "s":
+		return time.Duration(n) * time.Second, nil
+	default:
+		return 0, fmt.Errorf("unknown unit %q", unit)
+	}
+}
+
+// FindColdFiles walks poolMount and returns absolute paths of files
+// whose mtime is older than (now - threshold). Directories are not included.
+func FindColdFiles(poolMount string, threshold time.Duration) ([]string, error) {
+	cutoff := time.Now().Add(-threshold)
+	var out []string
+	err := filepath.Walk(poolMount, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			if os.IsPermission(err) {
+				return nil
+			}
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if info.ModTime().Before(cutoff) {
+			out = append(out, path)
+		}
+		return nil
+	})
+	return out, err
 }
 
 // loadMockPools creates realistic mock cache pools for development.

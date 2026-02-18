@@ -68,6 +68,39 @@ func NewRouter(arrayMgr *array.Manager, sysMgr *system.Manager, diskMgr *disk.Ma
 		writeJSON(w, http.StatusOK, response{OK: true, Data: "check started"})
 	})
 
+	// Assign disk to array slot (array must be stopped)
+	mux.HandleFunc("POST /api/array/assign", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Slot   int    `json:"slot"`
+			Device string `json:"device"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "invalid request body"})
+			return
+		}
+		if err := arrayMgr.AssignDisk(req.Slot, req.Device); err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, response{OK: true, Data: "disk assigned"})
+	})
+
+	// Unassign disk from slot (array must be stopped)
+	mux.HandleFunc("POST /api/array/unassign", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Slot int `json:"slot"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "invalid request body"})
+			return
+		}
+		if err := arrayMgr.UnassignDisk(req.Slot); err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, response{OK: true, Data: "disk unassigned"})
+	})
+
 	// System info
 	mux.HandleFunc("GET /api/system/module", func(w http.ResponseWriter, r *http.Request) {
 		loaded := sysMgr.IsModuleLoaded()

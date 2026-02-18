@@ -33,7 +33,7 @@ func main() {
 	diskMgr := disk.NewManager(sysMgr.MockMode)
 
 	// Initialize the cache manager (mergerfs + mover)
-	cacheMgr := cache.NewManager(sysMgr.MockMode)
+	cacheMgr := cache.NewManager(sysMgr.MockMode, diskMgr)
 
 	// Initialize API router
 	router := api.NewRouter(arrayMgr, sysMgr, diskMgr, cacheMgr)

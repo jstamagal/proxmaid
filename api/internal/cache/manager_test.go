@@ -1,11 +1,14 @@
 package cache
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNewManagerMockMode(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	if !m.mockMode {
 		t.Error("expected mock mode to be enabled")
 	}
@@ -15,7 +18,7 @@ func TestNewManagerMockMode(t *testing.T) {
 }
 
 func TestMockPoolsLoaded(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	pools := m.GetPools()
 	if len(pools) != 2 {
 		t.Errorf("expected 2 mock pools, got %d", len(pools))
@@ -23,7 +26,7 @@ func TestMockPoolsLoaded(t *testing.T) {
 }
 
 func TestGetPool(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	pool, err := m.GetPool("nvme-fast")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -37,7 +40,7 @@ func TestGetPool(t *testing.T) {
 }
 
 func TestGetPoolNotFound(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	_, err := m.GetPool("nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent pool")
@@ -45,7 +48,7 @@ func TestGetPoolNotFound(t *testing.T) {
 }
 
 func TestCreatePool(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	pool, err := m.CreatePool(CreatePoolRequest{
 		Name:    "test-pool",
 		Devices: []string{"/dev/sdf"},
@@ -63,7 +66,7 @@ func TestCreatePool(t *testing.T) {
 }
 
 func TestCreatePoolDuplicate(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	_, err := m.CreatePool(CreatePoolRequest{
 		Name:    "nvme-fast",
 		Devices: []string{"/dev/sdf"},
@@ -74,7 +77,7 @@ func TestCreatePoolDuplicate(t *testing.T) {
 }
 
 func TestCreatePoolValidation(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 
 	// Empty name
 	_, err := m.CreatePool(CreatePoolRequest{
@@ -94,7 +97,7 @@ func TestCreatePoolValidation(t *testing.T) {
 }
 
 func TestDeletePool(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	err := m.DeletePool("ssd-warm")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -107,7 +110,7 @@ func TestDeletePool(t *testing.T) {
 }
 
 func TestDeletePoolNotFound(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	err := m.DeletePool("nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent pool")
@@ -115,11 +118,8 @@ func TestDeletePoolNotFound(t *testing.T) {
 }
 
 func TestMoverStatus(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	status := m.GetMoverStatus()
-	if status == nil {
-		t.Fatal("expected non-nil mover status")
-	}
 	if status.Config.Schedule != "40 3 * * *" {
 		t.Errorf("expected default schedule, got %q", status.Config.Schedule)
 	}
@@ -129,7 +129,7 @@ func TestMoverStatus(t *testing.T) {
 }
 
 func TestUpdateMoverConfig(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	err := m.UpdateMoverConfig(MoverConfig{
 		Schedule:     "0 4 * * *",
 		AgeThreshold: "2d",
@@ -146,7 +146,7 @@ func TestUpdateMoverConfig(t *testing.T) {
 }
 
 func TestUpdateMoverConfigValidation(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	err := m.UpdateMoverConfig(MoverConfig{
 		AgeThreshold: "1d",
 	})
@@ -163,7 +163,7 @@ func TestUpdateMoverConfigValidation(t *testing.T) {
 }
 
 func TestRunMover(t *testing.T) {
-	m := NewManager(true)
+	m := NewManager(true, nil)
 	err := m.RunMover()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -178,5 +178,80 @@ func TestRunMover(t *testing.T) {
 	err = m.RunMover()
 	if err == nil {
 		t.Error("expected error when mover is already running")
+	}
+}
+
+func TestParseAgeThreshold(t *testing.T) {
+	tests := []struct {
+		in   string
+		want time.Duration
+		ok   bool
+	}{
+		{"1d", 24 * time.Hour, true},
+		{"12h", 12 * time.Hour, true},
+		{"30m", 30 * time.Minute, true},
+		{"90m", 90 * time.Minute, true},
+		{"7d", 7 * 24 * time.Hour, true},
+		{"1s", 1 * time.Second, true},
+		{"1D", 24 * time.Hour, true},
+		{"12H", 12 * time.Hour, true},
+		{"30M", 30 * time.Minute, true},
+		{"", 24 * time.Hour, true},
+		{"bad", 0, false},
+		{"1x", 0, false},
+	}
+	for _, tt := range tests {
+		got, err := ParseAgeThreshold(tt.in)
+		if tt.ok && err != nil {
+			t.Errorf("ParseAgeThreshold(%q): %v", tt.in, err)
+			continue
+		}
+		if !tt.ok && err == nil {
+			t.Errorf("ParseAgeThreshold(%q): expected error", tt.in)
+			continue
+		}
+		if tt.ok && got != tt.want {
+			t.Errorf("ParseAgeThreshold(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestFindColdFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	oldFile := filepath.Join(dir, "old.txt")
+	newFile := filepath.Join(dir, "new.txt")
+	if err := os.WriteFile(oldFile, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newFile, []byte("new"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Make old.txt have mtime in the past
+	past := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(oldFile, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	// Threshold 1h: only old.txt is cold
+	got, err := FindColdFiles(dir, 1*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("expected 1 cold file, got %d: %v", len(got), got)
+	}
+	if len(got) > 0 && filepath.Base(got[0]) != "old.txt" {
+		t.Errorf("expected old.txt, got %s", got[0])
+	}
+
+	// Threshold 30m: both files cold (old is 2h ago, new is recent but we only check mtime)
+	got, err = FindColdFiles(dir, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// old.txt is 2h old, new.txt is fresh; so only old.txt is cold with 30m threshold
+	if len(got) != 1 {
+		t.Errorf("expected 1 cold file with 30m threshold, got %d", len(got))
 	}
 }
