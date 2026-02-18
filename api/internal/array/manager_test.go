@@ -8,32 +8,74 @@ import (
 func TestParseNmdstat_Started(t *testing.T) {
 	raw := `mdState=STARTED
 sbName=/nonraid.dat
-sbVersion=2
+sbVersion=2.9.35
 sbNumDisks=4
-sbSynced=1
-sbSynced2=0
-mdNumStripes=1280
+sbSynced=1771262613
+sbSynced2=1771273972
 mdNumDisks=4
 mdNumInvalid=0
 mdResync=0
 mdResyncPos=0
-mdResyncSize=0
+mdResyncSize=976760832
 diskNumber.0=0
-diskStatus.0=DISK_OK
-diskName.0=sdb1
-diskSize.0=2097152
+diskName.0=
+diskSize.0=976760832
+diskState.0=7
+rdevNumber.0=0
+rdevStatus.0=DISK_OK
+rdevName.0=nvme0n1p1
+rdevSize.0=976760832
+rdevId.0=nvme-SK_Hynix_P41_MOCK001
+rdevReads.0=0
+rdevWrites.0=0
+rdevNumErrors.0=0
 diskNumber.1=1
-diskStatus.1=DISK_OK
-diskName.1=sdc1
-diskSize.1=2097152
+diskName.1=nmd1p1
+diskSize.1=3906250000
+diskState.1=7
+rdevNumber.1=1
+rdevStatus.1=DISK_OK
+rdevName.1=sdb1
+rdevSize.1=3906250000
+rdevId.1=ata-WDC_WD20EFRX_MOCK001
+rdevReads.1=163
+rdevWrites.1=42
+rdevNumErrors.1=0
 diskNumber.2=2
-diskStatus.2=DISK_OK
-diskName.2=sdd1
-diskSize.2=2097152
+diskName.2=nmd2p1
+diskSize.2=3906250000
+diskState.2=7
+rdevNumber.2=2
+rdevStatus.2=DISK_OK
+rdevName.2=sdc1
+rdevSize.2=3906250000
+rdevId.2=ata-WDC_WD20EFRX_MOCK002
+rdevReads.2=163
+rdevWrites.2=38
+rdevNumErrors.2=0
 diskNumber.3=3
-diskStatus.3=DISK_OK
-diskName.3=sde1
-diskSize.3=2097152
+diskName.3=nmd3p1
+diskSize.3=7812500000
+diskState.3=7
+rdevNumber.3=3
+rdevStatus.3=DISK_OK
+rdevName.3=sdd1
+rdevSize.3=7812500000
+rdevId.3=ata-Seagate_IronWolf_MOCK001
+rdevReads.3=245
+rdevWrites.3=120
+rdevNumErrors.3=0
+diskNumber.4=4
+diskName.4=
+diskSize.4=0
+diskState.4=0
+rdevNumber.4=4
+rdevStatus.4=DISK_NP
+rdevName.4=
+rdevSize.4=0
+rdevReads.4=0
+rdevWrites.4=0
+rdevNumErrors.4=0
 `
 	status, err := parseNmdstat(raw)
 	if err != nil {
@@ -52,23 +94,35 @@ diskSize.3=2097152
 	if status.ResyncActive {
 		t.Error("expected resync inactive")
 	}
+	// Should have 4 active disks (DISK_NP slots are filtered out)
 	if len(status.Disks) != 4 {
 		t.Fatalf("expected 4 disk entries, got %d", len(status.Disks))
 	}
 
-	// Slot 0 should be parity
+	// Slot 0 should be parity with real device name
 	if status.Disks[0].Role != "parity" {
 		t.Errorf("expected slot 0 role 'parity', got '%s'", status.Disks[0].Role)
 	}
-	if status.Disks[0].DeviceName != "sdb1" {
-		t.Errorf("expected slot 0 device 'sdb1', got '%s'", status.Disks[0].DeviceName)
+	if status.Disks[0].DeviceName != "nvme0n1p1" {
+		t.Errorf("expected slot 0 device 'nvme0n1p1', got '%s'", status.Disks[0].DeviceName)
+	}
+	if status.Disks[0].DiskID != "nvme-SK_Hynix_P41_MOCK001" {
+		t.Errorf("expected slot 0 disk_id, got '%s'", status.Disks[0].DiskID)
 	}
 
-	// Remaining slots should be data
+	// Data disks
 	for i := 1; i < 4; i++ {
 		if status.Disks[i].Role != "data" {
 			t.Errorf("expected slot %d role 'data', got '%s'", i, status.Disks[i].Role)
 		}
+		if status.Disks[i].SizeHuman == "" {
+			t.Errorf("expected non-empty SizeHuman for slot %d", i)
+		}
+	}
+
+	// Check synced
+	if !status.Synced {
+		t.Error("expected synced = true")
 	}
 }
 
@@ -98,21 +152,37 @@ mdNumDisks=4
 mdNumInvalid=1
 mdResync=0
 diskNumber.0=0
-diskStatus.0=DISK_OK
-diskName.0=sdb1
-diskSize.0=2097152
+diskName.0=
+rdevStatus.0=DISK_OK
+rdevName.0=nvme0n1p1
+rdevSize.0=976760832
+rdevReads.0=0
+rdevWrites.0=0
+rdevNumErrors.0=0
 diskNumber.1=1
-diskStatus.1=DISK_DSBL
 diskName.1=
-diskSize.1=0
+rdevStatus.1=DISK_DSBL
+rdevName.1=
+rdevSize.1=0
+rdevReads.1=0
+rdevWrites.1=0
+rdevNumErrors.1=0
 diskNumber.2=2
-diskStatus.2=DISK_OK
-diskName.2=sdd1
-diskSize.2=2097152
+diskName.2=nmd2p1
+rdevStatus.2=DISK_OK
+rdevName.2=sdc1
+rdevSize.2=3906250000
+rdevReads.2=0
+rdevWrites.2=0
+rdevNumErrors.2=0
 diskNumber.3=3
-diskStatus.3=DISK_OK
-diskName.3=sde1
-diskSize.3=2097152
+diskName.3=nmd3p1
+rdevStatus.3=DISK_OK
+rdevName.3=sdd1
+rdevSize.3=7812500000
+rdevReads.3=0
+rdevWrites.3=0
+rdevNumErrors.3=0
 `
 	status, err := parseNmdstat(raw)
 	if err != nil {
@@ -122,8 +192,15 @@ diskSize.3=2097152
 	if status.NumInvalid != 1 {
 		t.Errorf("expected 1 invalid, got %d", status.NumInvalid)
 	}
-	if status.Disks[1].Status != "DISK_DSBL" {
-		t.Errorf("expected slot 1 status 'DISK_DSBL', got '%s'", status.Disks[1].Status)
+	// Slot 1 has DISK_DSBL — should be present in output
+	found := false
+	for _, d := range status.Disks {
+		if d.Slot == 1 && d.Status == "DISK_DSBL" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected slot 1 with DISK_DSBL status")
 	}
 }
 
@@ -142,6 +219,9 @@ mdResyncSize=2097152
 
 	if !status.ResyncActive {
 		t.Error("expected resync to be active")
+	}
+	if status.ResyncPct < 24.9 || status.ResyncPct > 25.1 {
+		t.Errorf("expected ~25%% resync progress, got %.2f%%", status.ResyncPct)
 	}
 }
 

@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
 vendor/
+ui/node_modules
 
 # Build output
 api/proxmaid
@@ -19,6 +20,8 @@ Thumbs.db
 # Next.js
 ui/.next/
 ui/out/
+ui/node_modules/*
+ui/node_modules
 
 # Environment
 .env

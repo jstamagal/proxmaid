@@ -10,6 +10,7 @@ import (
 
 	"github.com/proxmaid/proxmaid/internal/api"
 	"github.com/proxmaid/proxmaid/internal/array"
+	"github.com/proxmaid/proxmaid/internal/cache"
 	"github.com/proxmaid/proxmaid/internal/disk"
 	"github.com/proxmaid/proxmaid/internal/system"
 )
@@ -31,8 +32,11 @@ func main() {
 	// Initialize the disk manager
 	diskMgr := disk.NewManager(sysMgr.MockMode)
 
+	// Initialize the cache manager (mergerfs + mover)
+	cacheMgr := cache.NewManager(sysMgr.MockMode)
+
 	// Initialize API router
-	router := api.NewRouter(arrayMgr, sysMgr, diskMgr)
+	router := api.NewRouter(arrayMgr, sysMgr, diskMgr, cacheMgr)
 
 	port := defaultPort
 	if p := os.Getenv("PROXMAID_PORT"); p != "" {

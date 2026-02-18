@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/proxmaid/proxmaid/internal/array"
+	"github.com/proxmaid/proxmaid/internal/cache"
 	"github.com/proxmaid/proxmaid/internal/disk"
 	"github.com/proxmaid/proxmaid/internal/system"
 )
@@ -18,7 +19,7 @@ type response struct {
 }
 
 // NewRouter creates the HTTP router with all API routes.
-func NewRouter(arrayMgr *array.Manager, sysMgr *system.Manager, diskMgr *disk.Manager) http.Handler {
+func NewRouter(arrayMgr *array.Manager, sysMgr *system.Manager, diskMgr *disk.Manager, cacheMgr *cache.Manager) http.Handler {
 	mux := http.NewServeMux()
 
 	// Health check
@@ -96,6 +97,89 @@ func NewRouter(arrayMgr *array.Manager, sysMgr *system.Manager, diskMgr *disk.Ma
 			return
 		}
 		writeJSON(w, http.StatusOK, response{OK: true, Data: health})
+	})
+
+	// --- Cache Pool Endpoints ---
+
+	// List all cache pools
+	mux.HandleFunc("GET /api/cache/pools", func(w http.ResponseWriter, r *http.Request) {
+		pools := cacheMgr.GetPools()
+		writeJSON(w, http.StatusOK, response{OK: true, Data: pools})
+	})
+
+	// Get a single cache pool
+	mux.HandleFunc("GET /api/cache/pools/", func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Path[len("/api/cache/pools/"):]
+		if name == "" {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "pool name required"})
+			return
+		}
+		pool, err := cacheMgr.GetPool(name)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, response{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, response{OK: true, Data: pool})
+	})
+
+	// Create a cache pool
+	mux.HandleFunc("POST /api/cache/pools", func(w http.ResponseWriter, r *http.Request) {
+		var req cache.CreatePoolRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "invalid request body"})
+			return
+		}
+		pool, err := cacheMgr.CreatePool(req)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, response{OK: true, Data: pool})
+	})
+
+	// Delete a cache pool
+	mux.HandleFunc("DELETE /api/cache/pools/", func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Path[len("/api/cache/pools/"):]
+		if name == "" {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "pool name required"})
+			return
+		}
+		if err := cacheMgr.DeletePool(name); err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, response{OK: true, Data: "pool deleted"})
+	})
+
+	// --- Mover Endpoints ---
+
+	// Get mover status
+	mux.HandleFunc("GET /api/cache/mover", func(w http.ResponseWriter, r *http.Request) {
+		status := cacheMgr.GetMoverStatus()
+		writeJSON(w, http.StatusOK, response{OK: true, Data: status})
+	})
+
+	// Trigger mover run
+	mux.HandleFunc("POST /api/cache/mover/run", func(w http.ResponseWriter, r *http.Request) {
+		if err := cacheMgr.RunMover(); err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, response{OK: true, Data: "mover started"})
+	})
+
+	// Update mover config
+	mux.HandleFunc("PUT /api/cache/mover/config", func(w http.ResponseWriter, r *http.Request) {
+		var config cache.MoverConfig
+		if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "invalid request body"})
+			return
+		}
+		if err := cacheMgr.UpdateMoverConfig(config); err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, response{OK: true, Data: "mover config updated"})
 	})
 
 	// CORS middleware for development

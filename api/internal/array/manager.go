@@ -26,10 +26,16 @@ const (
 // DiskInfo holds parsed status for a single disk in the array.
 type DiskInfo struct {
 	Slot       int    `json:"slot"`
-	Status     string `json:"status"`
-	DeviceName string `json:"device_name"`
-	SizeBytes  int64  `json:"size_bytes"`
-	Role       string `json:"role"` // "parity", "data", "q-parity"
+	Status     string `json:"status"`      // rdevStatus: "DISK_OK", "DISK_NP", etc.
+	DeviceName string `json:"device_name"` // rdevName: actual device e.g. "nvme3n1p1"
+	VirtName   string `json:"virt_name"`   // diskName: virtual name e.g. "nmd1p1"
+	SizeBytes  int64  `json:"size_bytes"`  // rdevSize in sectors (* 512)
+	SizeHuman  string `json:"size_human"`  // human-readable size
+	Role       string `json:"role"`        // "parity", "data", "q-parity"
+	DiskID     string `json:"disk_id"`     // rdevId: disk-by-id link
+	Reads      int64  `json:"reads"`       // rdevReads
+	Writes     int64  `json:"writes"`      // rdevWrites
+	Errors     int    `json:"errors"`      // rdevNumErrors
 }
 
 // ArrayStatus holds the full parsed state of the array.
@@ -38,6 +44,7 @@ type ArrayStatus struct {
 	NumDisks     int        `json:"num_disks"`
 	NumInvalid   int        `json:"num_invalid"`
 	Synced       bool       `json:"synced"`
+	SyncedTime   string     `json:"synced_time"`
 	ResyncActive bool       `json:"resync_active"`
 	ResyncPct    float64    `json:"resync_pct"`
 	Disks        []DiskInfo `json:"disks"`
@@ -127,6 +134,27 @@ func (m *Manager) Check(mode string) error {
 	return nil
 }
 
+// humanSizeKB converts sectors (512 bytes) to human-readable.
+func humanSizeKB(sectors int64) string {
+	bytes := sectors * 512
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+		TB = GB * 1024
+	)
+	switch {
+	case bytes >= TB:
+		return fmt.Sprintf("%.1f TB", float64(bytes)/float64(TB))
+	case bytes >= GB:
+		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(MB))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
+
 // parseNmdstat parses the key=value output from /proc/nmdstat.
 func parseNmdstat(raw string) (*ArrayStatus, error) {
 	kv := make(map[string]string)
@@ -149,22 +177,54 @@ func parseNmdstat(raw string) (*ArrayStatus, error) {
 	fmt.Sscanf(kv["mdNumDisks"], "%d", &status.NumDisks)
 	fmt.Sscanf(kv["mdNumInvalid"], "%d", &status.NumInvalid)
 
-	// Parse resync
+	// Parse resync state
 	if kv["mdResync"] == "1" {
 		status.ResyncActive = true
+		var pos, size int64
+		fmt.Sscanf(kv["mdResyncPos"], "%d", &pos)
+		fmt.Sscanf(kv["mdResyncSize"], "%d", &size)
+		if size > 0 {
+			status.ResyncPct = float64(pos) / float64(size) * 100
+		}
 	}
 
-	// Parse synced state
-	status.Synced = kv["sbSynced"] == "1" || kv["sbSynced"] == "0"
+	// Parse synced state — sbSynced is a unix timestamp, nonzero = synced
+	if kv["sbSynced"] != "" && kv["sbSynced"] != "0" {
+		status.Synced = true
+		status.SyncedTime = kv["sbSynced"]
+	}
 
-	// Parse individual disks
-	for i := 0; i < status.NumDisks; i++ {
+	// Parse all 30 disk slots using rdev* fields (the actual device info)
+	for i := 0; i < 30; i++ {
+		rdevStatus := kv[fmt.Sprintf("rdevStatus.%d", i)]
+
+		// Skip empty slots (DISK_NP = not present)
+		if rdevStatus == "" || rdevStatus == "DISK_NP" {
+			continue
+		}
+
+		var rdevSize int64
+		fmt.Sscanf(kv[fmt.Sprintf("rdevSize.%d", i)], "%d", &rdevSize)
+
+		var reads, writes int64
+		fmt.Sscanf(kv[fmt.Sprintf("rdevReads.%d", i)], "%d", &reads)
+		fmt.Sscanf(kv[fmt.Sprintf("rdevWrites.%d", i)], "%d", &writes)
+
+		var numErrors int
+		fmt.Sscanf(kv[fmt.Sprintf("rdevNumErrors.%d", i)], "%d", &numErrors)
+
 		disk := DiskInfo{
 			Slot:       i,
-			Status:     kv[fmt.Sprintf("diskStatus.%d", i)],
-			DeviceName: kv[fmt.Sprintf("diskName.%d", i)],
+			Status:     rdevStatus,
+			DeviceName: kv[fmt.Sprintf("rdevName.%d", i)],
+			VirtName:   kv[fmt.Sprintf("diskName.%d", i)],
+			SizeBytes:  rdevSize * 512,
+			SizeHuman:  humanSizeKB(rdevSize),
+			DiskID:     kv[fmt.Sprintf("rdevId.%d", i)],
+			Reads:      reads,
+			Writes:     writes,
+			Errors:     numErrors,
 		}
-		fmt.Sscanf(kv[fmt.Sprintf("diskSize.%d", i)], "%d", &disk.SizeBytes)
 
 		// Slot 0 = Parity, Slot 29 = Q Parity, rest = Data
 		switch i {

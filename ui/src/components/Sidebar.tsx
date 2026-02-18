@@ -7,6 +7,7 @@ const navItems = [
     { href: '/', label: 'Dashboard', icon: '⬡' },
     { href: '/array', label: 'Array', icon: '◫' },
     { href: '/disks', label: 'Disks', icon: '◉' },
+    { href: '/cache', label: 'Cache', icon: '⧫' },
     { href: '/shares', label: 'Shares', icon: '⊞' },
     { href: '/apps', label: 'Apps', icon: '▦' },
     { href: '/settings', label: 'Settings', icon: '⚙' },

@@ -24,8 +24,14 @@ export interface DiskInfo {
     slot: number;
     status: string;
     device_name: string;
+    virt_name: string;
     size_bytes: number;
+    size_human: string;
     role: string;
+    disk_id: string;
+    reads: number;
+    writes: number;
+    errors: number;
 }
 
 export interface ArrayStatus {
@@ -33,6 +39,7 @@ export interface ArrayStatus {
     num_disks: number;
     num_invalid: number;
     synced: boolean;
+    synced_time: string;
     resync_active: boolean;
     resync_pct: number;
     disks: DiskInfo[];
@@ -60,6 +67,41 @@ export interface SmartHealth {
     raw_output: string;
 }
 
+export interface PoolDevice {
+    path: string;
+    model: string;
+    size: number;
+    size_human: string;
+}
+
+export interface CachePool {
+    name: string;
+    devices: PoolDevice[];
+    mount_point: string;
+    fs_type: string;
+    total_bytes: number;
+    used_bytes: number;
+    free_bytes: number;
+    used_pct: number;
+    status: string;
+}
+
+export interface MoverConfig {
+    schedule: string;
+    age_threshold: string;
+    enabled: boolean;
+}
+
+export interface MoverStatus {
+    running: boolean;
+    last_run: string;
+    next_run: string;
+    bytes_moved: number;
+    files_moved: number;
+    progress: number;
+    config: MoverConfig;
+}
+
 // API functions
 export const api = {
     health: () => fetchApi<string>('/api/health'),
@@ -74,6 +116,25 @@ export const api = {
     disks: {
         list: () => fetchApi<SystemDisk[]>('/api/disks'),
         smart: (device: string) => fetchApi<SmartHealth>(`/api/disks/smart?device=${device}`),
+    },
+
+    cache: {
+        pools: () => fetchApi<CachePool[]>('/api/cache/pools'),
+        pool: (name: string) => fetchApi<CachePool>(`/api/cache/pools/${name}`),
+        createPool: (data: { name: string; devices: string[]; fs_type: string }) =>
+            fetchApi<CachePool>('/api/cache/pools', {
+                method: 'POST',
+                body: JSON.stringify(data),
+            }),
+        deletePool: (name: string) =>
+            fetchApi<string>(`/api/cache/pools/${name}`, { method: 'DELETE' }),
+        mover: () => fetchApi<MoverStatus>('/api/cache/mover'),
+        runMover: () => fetchApi<string>('/api/cache/mover/run', { method: 'POST' }),
+        updateMoverConfig: (config: MoverConfig) =>
+            fetchApi<string>('/api/cache/mover/config', {
+                method: 'PUT',
+                body: JSON.stringify(config),
+            }),
     },
 
     system: {
