@@ -17,6 +17,10 @@ api/proxmaid
 .DS_Store
 Thumbs.db
 
+# Packages
+*.deb
+*.rpm
+
 # Next.js
 ui/.next/
 ui/.next/*
