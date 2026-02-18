@@ -1,3 +1,6 @@
 [submodule "nonraid"]
 	path = nonraid
 	url = https://github.com/qvr/nonraid
+[submodule "mergerfs"]
+	path = mergerfs
+	url = https://github.com/trapexit/mergerfs
